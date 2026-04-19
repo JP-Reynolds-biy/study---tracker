@@ -53,6 +53,12 @@ function getNextReviewDate(lastStudied, reviewCount) {
   return date.toISOString();
 }
 
+function getEffectiveKnowledge(topic) {
+  const subs = topic.subtopics || [];
+  if (subs.length === 0) return topic.knowledge;
+  return Math.max(1, Math.round(subs.reduce((a, st) => a + st.knowledge, 0) / subs.length));
+}
+
 function getReviewStatus(topic) {
   if (!topic.lastStudied) return { status: 'new', days: null, label: 'Not started' };
   const nextReview = getNextReviewDate(topic.lastStudied, topic.reviewCount || 0);
@@ -77,6 +83,7 @@ export default function StudyTracker() {
   const [activeTopic, setActiveTopic] = useState(null);
   const [showLogModal, setShowLogModal] = useState(false);
   const [showAddTopic, setShowAddTopic] = useState(false);
+  const [activeSubtopic, setActiveSubtopic] = useState(null);
 
   useEffect(() => {
     const data = loadData();
@@ -106,9 +113,11 @@ export default function StudyTracker() {
       knowledge: 1,
       notes: '',
       quizletUrl: '',
+      examLinks: '',
       lastStudied: null,
       reviewCount: 0,
       totalMinutes: 0,
+      subtopics: [],
     };
     setState(prev => ({
       ...prev,
@@ -125,6 +134,107 @@ export default function StudyTracker() {
         s.id === subjectId ? { ...s, topics: s.topics.filter(t => t.id !== topicId) } : s
       )
     }));
+  };
+
+  const addSubtopic = (subjectId, topicId, name) => {
+    const newSubtopic = {
+      id: `st_${Date.now()}`,
+      name,
+      knowledge: 1,
+      notes: '',
+      quizletUrl: '',
+      examLinks: '',
+      lastStudied: null,
+      reviewCount: 0,
+      totalMinutes: 0,
+    };
+    setState(prev => ({
+      ...prev,
+      subjects: prev.subjects.map(s =>
+        s.id === subjectId ? {
+          ...s,
+          topics: s.topics.map(t =>
+            t.id === topicId ? { ...t, subtopics: [...(t.subtopics || []), newSubtopic] } : t
+          )
+        } : s
+      )
+    }));
+  };
+
+  const deleteSubtopic = (subjectId, topicId, subtopicId) => {
+    setState(prev => ({
+      ...prev,
+      subjects: prev.subjects.map(s =>
+        s.id === subjectId ? {
+          ...s,
+          topics: s.topics.map(t =>
+            t.id === topicId ? { ...t, subtopics: (t.subtopics || []).filter(st => st.id !== subtopicId) } : t
+          )
+        } : s
+      )
+    }));
+  };
+
+  const updateSubtopic = (subjectId, topicId, subtopicId, updates) => {
+    setState(prev => ({
+      ...prev,
+      subjects: prev.subjects.map(s =>
+        s.id === subjectId ? {
+          ...s,
+          topics: s.topics.map(t =>
+            t.id === topicId ? {
+              ...t,
+              subtopics: (t.subtopics || []).map(st => st.id === subtopicId ? { ...st, ...updates } : st)
+            } : t
+          )
+        } : s
+      )
+    }));
+  };
+
+  const logSubtopicSession = (subjectId, topicId, subtopicId, minutes, newKnowledge) => {
+    const now = new Date().toISOString();
+    const today = new Date().toDateString();
+    setState(prev => {
+      const subject = prev.subjects.find(s => s.id === subjectId);
+      const topic = subject.topics.find(t => t.id === topicId);
+      const subtopic = (topic.subtopics || []).find(st => st.id === subtopicId);
+      const minutesXP = Math.floor(minutes / 15) * 10;
+      const knowledgeXP = Math.max(0, (newKnowledge - subtopic.knowledge)) * 25;
+      const earnedXP = minutesXP + knowledgeXP + 5;
+      const lastDay = prev.streak.lastDay;
+      let newStreak = prev.streak;
+      if (lastDay !== today) {
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        newStreak = { count: lastDay === yesterday.toDateString() ? prev.streak.count + 1 : 1, lastDay: today };
+      }
+      return {
+        ...prev,
+        xp: prev.xp + earnedXP,
+        streak: newStreak,
+        sessions: [...prev.sessions, { id: `s_${Date.now()}`, subjectId, topicId, subtopicId, date: now, minutes, xpEarned: earnedXP }],
+        subjects: prev.subjects.map(s =>
+          s.id === subjectId ? {
+            ...s,
+            topics: s.topics.map(t =>
+              t.id === topicId ? {
+                ...t,
+                subtopics: (t.subtopics || []).map(st =>
+                  st.id === subtopicId ? {
+                    ...st,
+                    lastStudied: now,
+                    reviewCount: (st.reviewCount || 0) + 1,
+                    knowledge: newKnowledge,
+                    totalMinutes: (st.totalMinutes || 0) + minutes,
+                  } : st
+                )
+              } : t
+            )
+          } : s
+        )
+      };
+    });
   };
 
   const logStudySession = (subjectId, topicId, minutes, newKnowledge) => {
@@ -183,15 +293,21 @@ export default function StudyTracker() {
     });
   };
 
-  // Derived: overdue and due today topics across all subjects
+  // Derived: overdue and due today topics (and subtopics) across all subjects
   const dueTopics = useMemo(() => {
     const due = [];
     state.subjects.forEach(s => {
       s.topics.forEach(t => {
         const review = getReviewStatus(t);
         if (review.status === 'overdue' || review.status === 'today') {
-          due.push({ subject: s, topic: t, review });
+          due.push({ subject: s, topic: t, subtopic: null, review });
         }
+        (t.subtopics || []).forEach(st => {
+          const stReview = getReviewStatus(st);
+          if (stReview.status === 'overdue' || stReview.status === 'today') {
+            due.push({ subject: s, topic: t, subtopic: st, review: stReview });
+          }
+        });
       });
     });
     return due.sort((a, b) => (b.review.days || 0) - (a.review.days || 0));
@@ -257,18 +373,28 @@ export default function StudyTracker() {
               onSelectTopic={(t) => setActiveTopic({ subjectId: activeSubject, topicId: t.id })}
               onLogStudy={(t) => {
                 setActiveTopic({ subjectId: activeSubject, topicId: t.id });
+                setActiveSubtopic(null);
                 setShowLogModal(true);
               }}
               onDeleteTopic={(tid) => deleteTopic(activeSubject, tid)}
               onUpdateTopic={(tid, updates) => updateTopic(activeSubject, tid, updates)}
+              onAddSubtopic={(tid, name) => addSubtopic(activeSubject, tid, name)}
+              onDeleteSubtopic={(tid, stid) => deleteSubtopic(activeSubject, tid, stid)}
+              onUpdateSubtopic={(tid, stid, updates) => updateSubtopic(activeSubject, tid, stid, updates)}
+              onLogSubtopic={(t, st) => {
+                setActiveTopic({ subjectId: activeSubject, topicId: t.id });
+                setActiveSubtopic(st.id);
+                setShowLogModal(true);
+              }}
             />
           )}
 
           {view === 'review' && (
             <ReviewView
               dueTopics={dueTopics}
-              onStudy={(subjectId, topicId) => {
+              onStudy={(subjectId, topicId, subtopicId) => {
                 setActiveTopic({ subjectId, topicId });
+                setActiveSubtopic(subtopicId || null);
                 setShowLogModal(true);
               }}
             />
@@ -287,17 +413,27 @@ export default function StudyTracker() {
           />
         )}
 
-        {showLogModal && activeTopic && (
-          <LogStudyModal
-            topic={state.subjects.find(s => s.id === activeTopic.subjectId).topics.find(t => t.id === activeTopic.topicId)}
-            subject={state.subjects.find(s => s.id === activeTopic.subjectId)}
-            onLog={(minutes, knowledge) => {
-              logStudySession(activeTopic.subjectId, activeTopic.topicId, minutes, knowledge);
-              setShowLogModal(false);
-            }}
-            onClose={() => setShowLogModal(false)}
-          />
-        )}
+        {showLogModal && activeTopic && (() => {
+          const subj = state.subjects.find(s => s.id === activeTopic.subjectId);
+          const topic = subj.topics.find(t => t.id === activeTopic.topicId);
+          const subtopic = activeSubtopic ? (topic.subtopics || []).find(st => st.id === activeSubtopic) : null;
+          return (
+            <LogStudyModal
+              topic={subtopic || topic}
+              subject={subj}
+              onLog={(minutes, knowledge) => {
+                if (subtopic) {
+                  logSubtopicSession(activeTopic.subjectId, activeTopic.topicId, activeSubtopic, minutes, knowledge);
+                } else {
+                  logStudySession(activeTopic.subjectId, activeTopic.topicId, minutes, knowledge);
+                }
+                setShowLogModal(false);
+                setActiveSubtopic(null);
+              }}
+              onClose={() => { setShowLogModal(false); setActiveSubtopic(null); }}
+            />
+          );
+        })()}
       </div>
     </>
   );
@@ -321,7 +457,7 @@ function SubjectGrid({ subjects, onSelect }) {
     <div className="subject-grid">
       {subjects.map((s, i) => {
         const total = s.topics.length;
-        const percent = total > 0 ? Math.round((s.topics.reduce((a, t) => a + t.knowledge, 0) / (total * 5)) * 100) : 0;
+        const percent = total > 0 ? Math.round((s.topics.reduce((a, t) => a + getEffectiveKnowledge(t), 0) / (total * 5)) * 100) : 0;
         const due = s.topics.filter(t => {
           const r = getReviewStatus(t);
           return r.status === 'overdue' || r.status === 'today';
@@ -351,7 +487,7 @@ function SubjectGrid({ subjects, onSelect }) {
   );
 }
 
-function SubjectView({ subject, onBack, onAddTopic, onSelectTopic, onLogStudy, onDeleteTopic, onUpdateTopic }) {
+function SubjectView({ subject, onBack, onAddTopic, onSelectTopic, onLogStudy, onDeleteTopic, onUpdateTopic, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic }) {
   const [expandedTopic, setExpandedTopic] = useState(null);
 
   return (
@@ -382,7 +518,7 @@ function SubjectView({ subject, onBack, onAddTopic, onSelectTopic, onLogStudy, o
                   <div className="topic-main">
                     <h3 className="topic-name">{topic.name}</h3>
                     <div className="topic-meta">
-                      <KnowledgeBar level={topic.knowledge} />
+                      <KnowledgeBar level={getEffectiveKnowledge(topic)} />
                       <span className={`review-tag status-${review.status}`}>
                         {review.label}
                       </span>
@@ -401,20 +537,32 @@ function SubjectView({ subject, onBack, onAddTopic, onSelectTopic, onLogStudy, o
                   <div className="topic-details">
                     <div className="detail-row">
                       <label>Knowledge Level</label>
-                      <div className="knowledge-picker">
-                        {[1, 2, 3, 4, 5].map(n => (
-                          <button
-                            key={n}
-                            className={`k-btn ${topic.knowledge === n ? 'active' : ''}`}
-                            onClick={() => onUpdateTopic(topic.id, { knowledge: n })}
-                          >
-                            {n}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="k-label">
-                        {['Clueless', 'Shaky', 'Getting there', 'Confident', 'Mastered'][topic.knowledge - 1]}
-                      </div>
+                      {(topic.subtopics || []).length > 0 ? (
+                        <div className="derived-knowledge">
+                          <KnowledgeBar level={getEffectiveKnowledge(topic)} />
+                          <span className="k-label">
+                            {['Clueless', 'Shaky', 'Getting there', 'Confident', 'Mastered'][getEffectiveKnowledge(topic) - 1]}
+                            {' '}— averaged from {topic.subtopics.length} subtopic{topic.subtopics.length !== 1 ? 's' : ''}
+                          </span>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="knowledge-picker">
+                            {[1, 2, 3, 4, 5].map(n => (
+                              <button
+                                key={n}
+                                className={`k-btn ${topic.knowledge === n ? 'active' : ''}`}
+                                onClick={() => onUpdateTopic(topic.id, { knowledge: n })}
+                              >
+                                {n}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="k-label">
+                            {['Clueless', 'Shaky', 'Getting there', 'Confident', 'Mastered'][topic.knowledge - 1]}
+                          </div>
+                        </>
+                      )}
                     </div>
 
                     <div className="detail-row">
@@ -424,6 +572,16 @@ function SubjectView({ subject, onBack, onAddTopic, onSelectTopic, onLogStudy, o
                         onChange={(e) => onUpdateTopic(topic.id, { notes: e.target.value })}
                         placeholder="Key concepts, formulas, things to remember..."
                         rows={4}
+                      />
+                    </div>
+
+                    <div className="detail-row">
+                      <label>Exam questions &amp; links</label>
+                      <textarea
+                        value={topic.examLinks || ''}
+                        onChange={(e) => onUpdateTopic(topic.id, { examLinks: e.target.value })}
+                        placeholder="Paste past paper links, exam questions, resources..."
+                        rows={3}
                       />
                     </div>
 
@@ -452,6 +610,14 @@ function SubjectView({ subject, onBack, onAddTopic, onSelectTopic, onLogStudy, o
                       </div>
                     </div>
 
+                    <SubtopicSection
+                      topic={topic}
+                      onAddSubtopic={(name) => onAddSubtopic(topic.id, name)}
+                      onDeleteSubtopic={(stid) => onDeleteSubtopic(topic.id, stid)}
+                      onUpdateSubtopic={(stid, updates) => onUpdateSubtopic(topic.id, stid, updates)}
+                      onLogSubtopic={(st) => onLogSubtopic(topic, st)}
+                    />
+
                     <button
                       className="delete-btn"
                       onClick={() => { if (confirm(`Delete "${topic.name}"?`)) onDeleteTopic(topic.id); }}
@@ -479,6 +645,134 @@ function KnowledgeBar({ level }) {
   );
 }
 
+function SubtopicSection({ topic, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic }) {
+  const [expandedSt, setExpandedSt] = useState(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newName, setNewName] = useState('');
+  const subtopics = topic.subtopics || [];
+
+  const handleAdd = () => {
+    if (!newName.trim()) return;
+    onAddSubtopic(newName.trim());
+    setNewName('');
+    setShowAdd(false);
+  };
+
+  return (
+    <div className="subtopic-section">
+      <div className="subtopic-section-header">
+        <span className="subtopic-section-label">Subtopics</span>
+        <button className="add-subtopic-btn" onClick={() => setShowAdd(v => !v)}>+ Add subtopic</button>
+      </div>
+
+      {showAdd && (
+        <div className="subtopic-add-row">
+          <input
+            autoFocus
+            type="text"
+            value={newName}
+            onChange={e => setNewName(e.target.value)}
+            placeholder="e.g., Factorising, Quadratics..."
+            onKeyDown={e => {
+              if (e.key === 'Enter') handleAdd();
+              if (e.key === 'Escape') { setShowAdd(false); setNewName(''); }
+            }}
+          />
+          <button className="btn-primary" disabled={!newName.trim()} onClick={handleAdd}>Add</button>
+        </div>
+      )}
+
+      {subtopics.length === 0 && !showAdd && (
+        <p className="subtopic-empty">No subtopics yet.</p>
+      )}
+
+      {subtopics.map(st => {
+        const review = getReviewStatus(st);
+        const isExp = expandedSt === st.id;
+        return (
+          <div key={st.id} className={`subtopic-card ${isExp ? 'expanded' : ''}`}>
+            <div className="subtopic-row" onClick={() => setExpandedSt(isExp ? null : st.id)}>
+              <div className="subtopic-info">
+                <span className="subtopic-name">↳ {st.name}</span>
+                <div className="topic-meta">
+                  <KnowledgeBar level={st.knowledge} />
+                  <span className={`review-tag status-${review.status}`}>{review.label}</span>
+                  {st.totalMinutes > 0 && <span className="mins-tag">{st.totalMinutes}min</span>}
+                </div>
+              </div>
+              <button className="log-btn small" onClick={e => { e.stopPropagation(); onLogSubtopic(st); }}>Log</button>
+            </div>
+
+            {isExp && (
+              <div className="subtopic-details">
+                <div className="detail-row">
+                  <label>Knowledge Level</label>
+                  <div className="knowledge-picker">
+                    {[1, 2, 3, 4, 5].map(n => (
+                      <button
+                        key={n}
+                        className={`k-btn ${st.knowledge === n ? 'active' : ''}`}
+                        onClick={() => onUpdateSubtopic(st.id, { knowledge: n })}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="k-label">
+                    {['Clueless', 'Shaky', 'Getting there', 'Confident', 'Mastered'][st.knowledge - 1]}
+                  </div>
+                </div>
+
+                <div className="detail-row">
+                  <label>Notes</label>
+                  <textarea
+                    value={st.notes || ''}
+                    onChange={e => onUpdateSubtopic(st.id, { notes: e.target.value })}
+                    placeholder="Key concepts, formulas, things to remember..."
+                    rows={3}
+                  />
+                </div>
+
+                <div className="detail-row">
+                  <label>Exam questions &amp; links</label>
+                  <textarea
+                    value={st.examLinks || ''}
+                    onChange={e => onUpdateSubtopic(st.id, { examLinks: e.target.value })}
+                    placeholder="Paste past paper links, exam questions, resources..."
+                    rows={3}
+                  />
+                </div>
+
+                <div className="detail-row">
+                  <label>Quizlet link</label>
+                  <input
+                    type="url"
+                    value={st.quizletUrl || ''}
+                    onChange={e => onUpdateSubtopic(st.id, { quizletUrl: e.target.value })}
+                    placeholder="https://quizlet.com/..."
+                  />
+                  {st.quizletUrl && (
+                    <a href={st.quizletUrl} target="_blank" rel="noreferrer" className="open-link">Open Quizlet →</a>
+                  )}
+                </div>
+
+                <div className="detail-row review-info">
+                  <div><strong>Last studied:</strong> {formatDate(st.lastStudied)}</div>
+                  <div><strong>Reviews done:</strong> {st.reviewCount || 0}</div>
+                  <div><strong>Next interval:</strong> {REVIEW_INTERVALS[Math.min(st.reviewCount || 0, REVIEW_INTERVALS.length - 1)]} days</div>
+                </div>
+                <button className="delete-btn" onClick={() => { if (confirm(`Delete "${st.name}"?`)) onDeleteSubtopic(st.id); }}>
+                  Delete subtopic
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function ReviewView({ dueTopics, onStudy }) {
   if (dueTopics.length === 0) {
     return (
@@ -494,18 +788,20 @@ function ReviewView({ dueTopics, onStudy }) {
       <h2 className="section-title">Due for review</h2>
       <p className="section-sub">Topics the forgetting curve says you need to revisit</p>
       <div className="review-list">
-        {dueTopics.map(({ subject, topic, review }) => (
-          <div key={topic.id} className="review-card" style={{ '--subject-color': subject.color }}>
+        {dueTopics.map(({ subject, topic, subtopic, review }) => (
+          <div key={subtopic ? subtopic.id : topic.id} className="review-card" style={{ '--subject-color': subject.color }}>
             <div className="review-card-left">
               <span className="review-glyph">{subject.glyph}</span>
               <div>
                 <div className="review-subject">{subject.name}</div>
-                <div className="review-topic">{topic.name}</div>
+                <div className="review-topic">
+                  {subtopic ? <>{topic.name} <span className="review-subtopic-arrow">›</span> {subtopic.name}</> : topic.name}
+                </div>
               </div>
             </div>
             <div className="review-card-right">
               <span className={`review-tag status-${review.status}`}>{review.label}</span>
-              <button className="log-btn" onClick={() => onStudy(subject.id, topic.id)}>Study</button>
+              <button className="log-btn" onClick={() => onStudy(subject.id, topic.id, subtopic?.id)}>Study</button>
             </div>
           </div>
         ))}
@@ -1614,6 +1910,126 @@ const styles = `
     font-size: 1.1rem;
   }
 
+  .derived-knowledge {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0;
+  }
+
+  .subtopic-section {
+    margin-top: 1.25rem;
+    padding-top: 1rem;
+    border-top: 1px dashed rgba(154, 125, 63, 0.4);
+  }
+
+  .subtopic-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+  }
+
+  .subtopic-section-label {
+    font-family: var(--sans);
+    font-size: 0.7rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  .add-subtopic-btn {
+    background: transparent;
+    border: 1px solid var(--gold-dark);
+    color: var(--ink-soft);
+    font-family: var(--sans);
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.3rem 0.65rem;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.15s;
+  }
+
+  .add-subtopic-btn:hover { background: rgba(201, 169, 97, 0.15); color: var(--ink); }
+
+  .subtopic-add-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .subtopic-add-row input {
+    flex: 1;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--gold-dark);
+    background: white;
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 0.95rem;
+    border-radius: 2px;
+  }
+
+  .subtopic-add-row input:focus { outline: none; border-color: var(--subject-color, var(--ink)); }
+
+  .subtopic-empty {
+    font-family: var(--sans);
+    font-size: 0.8rem;
+    color: var(--ink-soft);
+    font-style: italic;
+    margin: 0.25rem 0 0.75rem;
+  }
+
+  .subtopic-card {
+    background: rgba(255, 255, 255, 0.3);
+    border: 1px solid rgba(154, 125, 63, 0.35);
+    border-left: 3px solid var(--subject-color, var(--gold-dark));
+    border-radius: 2px;
+    margin-bottom: 0.4rem;
+    opacity: 0.95;
+  }
+
+  .subtopic-card.expanded { background: rgba(255, 255, 255, 0.55); }
+
+  .subtopic-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.6rem 0.75rem;
+    cursor: pointer;
+    gap: 0.75rem;
+  }
+
+  .subtopic-info { flex: 1; min-width: 0; }
+
+  .subtopic-name {
+    font-family: var(--display);
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--ink);
+    display: block;
+    margin-bottom: 0.3rem;
+  }
+
+  .log-btn.small {
+    padding: 0.35rem 0.7rem;
+    font-size: 0.7rem;
+  }
+
+  .subtopic-details {
+    padding: 0 0.75rem 0.75rem;
+    border-top: 1px dashed rgba(154, 125, 63, 0.3);
+    padding-top: 0.75rem;
+    animation: fadeUp 0.2s ease;
+  }
+
+  .review-subtopic-arrow {
+    color: var(--ink-soft);
+    font-size: 0.9em;
+    margin: 0 0.2rem;
+  }
+
   @media (max-width: 640px) {
     .app { padding: 1rem; }
     .title { font-size: 1.5rem; }
@@ -1625,5 +2041,6 @@ const styles = `
     .sbar-row { grid-template-columns: 100px 1fr 50px; font-size: 0.85rem; }
     .topic-header { flex-direction: column; align-items: flex-start; }
     .log-btn { width: 100%; }
+    .subtopic-add-row { flex-direction: column; }
   }
 `;
