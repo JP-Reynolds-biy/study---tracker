@@ -491,7 +491,7 @@ export default function StudyTracker() {
           )}
 
           {view === 'stats' && (
-            <StatsView state={state} />
+            <StatsView state={state} onImport={(data) => setState(data)} />
           )}
         </main>
 
@@ -972,7 +972,7 @@ function ReviewView({ dueTopics, onStudy }) {
   );
 }
 
-function StatsView({ state }) {
+function StatsView({ state, onImport }) {
   const exportData = () => {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -981,6 +981,26 @@ function StatsView({ state }) {
     a.download = `scribe-codex-${new Date().toISOString().split('T')[0]}.json`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const importData = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        if (!parsed.subjects || !parsed.sessions) {
+          alert('Invalid backup file — missing subjects or sessions.');
+          return;
+        }
+        onImport(parsed);
+      } catch {
+        alert('Could not read file. Make sure it is a valid JSON backup.');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   const totalMinutes = state.sessions.reduce((a, s) => a + s.minutes, 0);
@@ -1012,7 +1032,13 @@ function StatsView({ state }) {
     <div className="stats-view">
       <div className="stats-header">
         <h2 className="section-title">Your study chronicle</h2>
-        <button className="export-btn" onClick={exportData}>↓ Export backup</button>
+        <div className="data-btns">
+          <label className="export-btn import-btn">
+            ↑ Import backup
+            <input type="file" accept=".json" onChange={importData} style={{ display: 'none' }} />
+          </label>
+          <button className="export-btn" onClick={exportData}>↓ Export backup</button>
+        </div>
       </div>
 
       <div className="stats-grid">
@@ -1820,6 +1846,8 @@ const styles = `
 
   .stats-header .section-title { margin-bottom: 0; }
 
+  .data-btns { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
   .export-btn {
     background: transparent;
     border: 1px solid var(--gold-dark);
@@ -1836,6 +1864,7 @@ const styles = `
 
   .export-btn:hover { background: rgba(201,169,97,0.15); color: var(--ink); }
   .export-btn:active { transform: scale(0.96); }
+  .import-btn { cursor: pointer; }
 
   .stats-grid {
     display: grid;
