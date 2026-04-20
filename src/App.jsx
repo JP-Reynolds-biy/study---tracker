@@ -124,60 +124,67 @@ function getEffectiveReviewStatus(topic) {
 }
 
 // ============ EXAM PDFS ============
-function ExamPdfs({ pdfs = [], onChange }) {
-  const [adding, setAdding] = useState(false);
-  const [label, setLabel] = useState('');
-  const [url, setUrl] = useState('');
+function ExamPdfs({ pdfs = [], onChange, userId }) {
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState('');
+  const inputRef = useRef(null);
 
-  function save() {
-    if (!url.trim()) return;
-    onChange([...pdfs, { id: `ep_${Date.now()}`, label: label.trim() || url.trim(), url: url.trim() }]);
-    setLabel('');
-    setUrl('');
-    setAdding(false);
+  async function handleFiles(e) {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+    setError('');
+    setUploading(true);
+    const added = [];
+    for (const file of files) {
+      const id = `ep_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const path = `${userId}/${id}_${file.name}`;
+      const { error: upErr } = await supabase.storage
+        .from('exam-papers')
+        .upload(path, file, { contentType: 'application/pdf' });
+      if (upErr) { setError(`Upload failed: ${upErr.message}`); continue; }
+      const { data } = supabase.storage.from('exam-papers').getPublicUrl(path);
+      added.push({ id, name: file.name, url: data.publicUrl, path });
+    }
+    onChange([...pdfs, ...added]);
+    setUploading(false);
+    // reset so the same file can be re-selected if needed
+    e.target.value = '';
   }
 
-  function remove(id) {
-    onChange(pdfs.filter(p => p.id !== id));
+  async function remove(pdf) {
+    await supabase.storage.from('exam-papers').remove([pdf.path]);
+    onChange(pdfs.filter(p => p.id !== pdf.id));
   }
 
   return (
     <div className="exam-pdfs">
-      {pdfs.length === 0 && !adding && (
-        <p className="exam-pdfs-empty">No links yet</p>
+      {pdfs.length === 0 && !uploading && (
+        <p className="exam-pdfs-empty">No papers uploaded yet</p>
       )}
       {pdfs.map(p => (
         <div key={p.id} className="exam-pdf-row">
           <a href={p.url} target="_blank" rel="noreferrer" className="exam-pdf-link">
-            &#128196; {p.label}
+            &#128196; {p.name}
           </a>
-          <button className="exam-pdf-del" onClick={() => remove(p.id)} title="Remove">&#10005;</button>
+          <button className="exam-pdf-del" onClick={() => remove(p)} title="Remove">&#10005;</button>
         </div>
       ))}
-      {adding ? (
-        <div className="exam-pdf-form">
-          <input
-            placeholder="Label (e.g. 2022 Paper 1)"
-            value={label}
-            onChange={e => setLabel(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && save()}
-            autoFocus
-          />
-          <input
-            type="url"
-            placeholder="https://..."
-            value={url}
-            onChange={e => setUrl(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && save()}
-          />
-          <div className="exam-pdf-form-btns">
-            <button className="btn-ghost" onClick={() => { setAdding(false); setLabel(''); setUrl(''); }}>Cancel</button>
-            <button className="btn-primary" disabled={!url.trim()} onClick={save}>Add</button>
-          </div>
-        </div>
-      ) : (
-        <button className="exam-pdf-add" onClick={() => setAdding(true)}>+ Add PDF link</button>
-      )}
+      {error && <p style={{ color: '#e07070', fontSize: '0.78rem', margin: '4px 0 0' }}>{error}</p>}
+      <input
+        ref={inputRef}
+        type="file"
+        accept="application/pdf"
+        multiple
+        style={{ display: 'none' }}
+        onChange={handleFiles}
+      />
+      <button
+        className="exam-pdf-add"
+        disabled={uploading}
+        onClick={() => inputRef.current.click()}
+      >
+        {uploading ? 'Uploading…' : '+ Upload PDF'}
+      </button>
     </div>
   );
 }
@@ -647,6 +654,7 @@ export default function StudyTracker() {
                 setShowLogModal(true);
               }}
               onUnlogSession={(id) => setConfirmUnlog(id)}
+              userId={user?.id}
             />
           )}
 
@@ -758,7 +766,7 @@ function SubjectGrid({ subjects, onSelect }) {
   );
 }
 
-function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onLogStudy, onDeleteTopic, onUpdateTopic, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic, onUnlogSession }) {
+function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onLogStudy, onDeleteTopic, onUpdateTopic, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic, onUnlogSession, userId }) {
   const [expandedTopic, setExpandedTopic] = useState(null);
 
   return (
@@ -851,6 +859,7 @@ function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onL
                       <ExamPdfs
                         pdfs={topic.examPdfs || []}
                         onChange={pdfs => onUpdateTopic(topic.id, { examPdfs: pdfs })}
+                        userId={userId}
                       />
                     </div>
 
@@ -887,6 +896,7 @@ function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onL
                       onUpdateSubtopic={(stid, updates) => onUpdateSubtopic(topic.id, stid, updates)}
                       onLogSubtopic={(st) => onLogSubtopic(topic, st)}
                       onUnlogSession={onUnlogSession}
+                      userId={userId}
                     />
 
                     {(() => {
@@ -938,7 +948,7 @@ function KnowledgeBar({ level }) {
   );
 }
 
-function SubtopicSection({ topic, sessions, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic, onUnlogSession }) {
+function SubtopicSection({ topic, sessions, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic, onUnlogSession, userId }) {
   const [expandedSt, setExpandedSt] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState('');
@@ -1031,6 +1041,7 @@ function SubtopicSection({ topic, sessions, onAddSubtopic, onDeleteSubtopic, onU
                   <ExamPdfs
                     pdfs={st.examPdfs || []}
                     onChange={pdfs => onUpdateSubtopic(st.id, { examPdfs: pdfs })}
+                    userId={userId}
                   />
                 </div>
 
