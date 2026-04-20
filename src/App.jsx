@@ -973,6 +973,16 @@ function ReviewView({ dueTopics, onStudy }) {
 }
 
 function StatsView({ state }) {
+  const exportData = () => {
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `scribe-codex-${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const totalMinutes = state.sessions.reduce((a, s) => a + s.minutes, 0);
   const totalSessions = state.sessions.length;
   const last7Days = useMemo(() => {
@@ -1000,7 +1010,10 @@ function StatsView({ state }) {
 
   return (
     <div className="stats-view">
-      <h2 className="section-title">Your study chronicle</h2>
+      <div className="stats-header">
+        <h2 className="section-title">Your study chronicle</h2>
+        <button className="export-btn" onClick={exportData}>↓ Export backup</button>
+      </div>
 
       <div className="stats-grid">
         <div className="stat-card">
@@ -1795,6 +1808,34 @@ const styles = `
   }
 
   .stats-view { animation: fadeUp 0.4s ease; }
+
+  .stats-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .stats-header .section-title { margin-bottom: 0; }
+
+  .export-btn {
+    background: transparent;
+    border: 1px solid var(--gold-dark);
+    color: var(--ink-soft);
+    font-family: var(--sans);
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.2s;
+  }
+
+  .export-btn:hover { background: rgba(201,169,97,0.15); color: var(--ink); }
+  .export-btn:active { transform: scale(0.96); }
 
   .stats-grid {
     display: grid;
