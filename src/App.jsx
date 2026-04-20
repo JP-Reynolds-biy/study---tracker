@@ -123,6 +123,65 @@ function getEffectiveReviewStatus(topic) {
   );
 }
 
+// ============ EXAM PDFS ============
+function ExamPdfs({ pdfs = [], onChange }) {
+  const [adding, setAdding] = useState(false);
+  const [label, setLabel] = useState('');
+  const [url, setUrl] = useState('');
+
+  function save() {
+    if (!url.trim()) return;
+    onChange([...pdfs, { id: `ep_${Date.now()}`, label: label.trim() || url.trim(), url: url.trim() }]);
+    setLabel('');
+    setUrl('');
+    setAdding(false);
+  }
+
+  function remove(id) {
+    onChange(pdfs.filter(p => p.id !== id));
+  }
+
+  return (
+    <div className="exam-pdfs">
+      {pdfs.length === 0 && !adding && (
+        <p className="exam-pdfs-empty">No links yet</p>
+      )}
+      {pdfs.map(p => (
+        <div key={p.id} className="exam-pdf-row">
+          <a href={p.url} target="_blank" rel="noreferrer" className="exam-pdf-link">
+            &#128196; {p.label}
+          </a>
+          <button className="exam-pdf-del" onClick={() => remove(p.id)} title="Remove">&#10005;</button>
+        </div>
+      ))}
+      {adding ? (
+        <div className="exam-pdf-form">
+          <input
+            placeholder="Label (e.g. 2022 Paper 1)"
+            value={label}
+            onChange={e => setLabel(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && save()}
+            autoFocus
+          />
+          <input
+            type="url"
+            placeholder="https://..."
+            value={url}
+            onChange={e => setUrl(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && save()}
+          />
+          <div className="exam-pdf-form-btns">
+            <button className="btn-ghost" onClick={() => { setAdding(false); setLabel(''); setUrl(''); }}>Cancel</button>
+            <button className="btn-primary" disabled={!url.trim()} onClick={save}>Add</button>
+          </div>
+        </div>
+      ) : (
+        <button className="exam-pdf-add" onClick={() => setAdding(true)}>+ Add PDF link</button>
+      )}
+    </div>
+  );
+}
+
 // ============ MAIN APP ============
 export default function StudyTracker() {
   const [state, setState] = useState({
@@ -221,6 +280,7 @@ export default function StudyTracker() {
       notes: '',
       quizletUrl: '',
       examLinks: '',
+      examPdfs: [],
       lastStudied: null,
       reviewCount: 0,
       totalMinutes: 0,
@@ -251,6 +311,7 @@ export default function StudyTracker() {
       notes: '',
       quizletUrl: '',
       examLinks: '',
+      examPdfs: [],
       lastStudied: null,
       reviewCount: 0,
       totalMinutes: 0,
@@ -786,12 +847,10 @@ function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onL
                     </div>
 
                     <div className="detail-row">
-                      <label>Exam questions &amp; links</label>
-                      <textarea
-                        value={topic.examLinks || ''}
-                        onChange={(e) => onUpdateTopic(topic.id, { examLinks: e.target.value })}
-                        placeholder="Paste past paper links, exam questions, resources..."
-                        rows={3}
+                      <label>Past exam papers</label>
+                      <ExamPdfs
+                        pdfs={topic.examPdfs || []}
+                        onChange={pdfs => onUpdateTopic(topic.id, { examPdfs: pdfs })}
                       />
                     </div>
 
@@ -968,12 +1027,10 @@ function SubtopicSection({ topic, sessions, onAddSubtopic, onDeleteSubtopic, onU
                 </div>
 
                 <div className="detail-row">
-                  <label>Exam questions &amp; links</label>
-                  <textarea
-                    value={st.examLinks || ''}
-                    onChange={e => onUpdateSubtopic(st.id, { examLinks: e.target.value })}
-                    placeholder="Paste past paper links, exam questions, resources..."
-                    rows={3}
+                  <label>Past exam papers</label>
+                  <ExamPdfs
+                    pdfs={st.examPdfs || []}
+                    onChange={pdfs => onUpdateSubtopic(st.id, { examPdfs: pdfs })}
                   />
                 </div>
 
@@ -2636,4 +2693,102 @@ const styles = `
 
   .add-subtopic-btn:active { transform: scale(0.95); }
   .delete-btn:active { transform: scale(0.96); }
+
+  /* ── Exam PDF links ── */
+  .exam-pdfs { display: flex; flex-direction: column; gap: 0.4rem; }
+
+  .exam-pdfs-empty {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    margin: 0 0 0.4rem;
+    font-style: italic;
+  }
+
+  .exam-pdf-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: rgba(201,169,97,0.06);
+    border: 1px solid rgba(201,169,97,0.18);
+    border-radius: 4px;
+    padding: 0.35rem 0.6rem;
+  }
+
+  .exam-pdf-link {
+    flex: 1;
+    font-family: var(--sans);
+    font-size: 0.82rem;
+    color: var(--gold);
+    text-decoration: none;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .exam-pdf-link:hover { text-decoration: underline; }
+
+  .exam-pdf-del {
+    background: none;
+    border: none;
+    color: var(--ink-soft);
+    cursor: pointer;
+    font-size: 0.75rem;
+    padding: 0 2px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .exam-pdf-del:hover { color: #e07070; }
+
+  .exam-pdf-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    background: rgba(201,169,97,0.04);
+    border: 1px solid rgba(201,169,97,0.2);
+    border-radius: 4px;
+    padding: 0.6rem;
+  }
+
+  .exam-pdf-form input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.4rem 0.6rem;
+    background: var(--papyrus);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-family: var(--sans);
+    font-size: 0.82rem;
+    color: var(--ink);
+  }
+
+  .exam-pdf-form-btns {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    margin-top: 0.15rem;
+  }
+
+  .exam-pdf-form-btns .btn-ghost,
+  .exam-pdf-form-btns .btn-primary {
+    padding: 0.35rem 0.85rem;
+    font-size: 0.75rem;
+  }
+
+  .exam-pdf-add {
+    align-self: flex-start;
+    background: none;
+    border: 1px dashed rgba(201,169,97,0.35);
+    border-radius: 4px;
+    color: var(--gold);
+    font-family: var(--sans);
+    font-size: 0.76rem;
+    letter-spacing: 0.08em;
+    padding: 0.3rem 0.7rem;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .exam-pdf-add:hover {
+    border-color: var(--gold);
+    background: rgba(201,169,97,0.08);
+  }
 `;
