@@ -1,7 +1,12 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 
-// Forgetting curve intervals (days after last study)
-const REVIEW_INTERVALS = [1, 5, 10, 20, 30, 60, 90, 180, 365];
+// Spaced repetition: gaps between consecutive reviews
+// reviewCount=1→5d, 2→5d, 3→10d, 4→10d, 5+→30d (cumulative: day 5,10,20,30,60,90,120,150…)
+function getReviewInterval(reviewCount) {
+  if (reviewCount <= 2) return 5;
+  if (reviewCount <= 4) return 10;
+  return 30;
+}
 
 const DEFAULT_SUBJECTS = [
   { id: 'maths', name: 'Maths', glyph: '𓎟', color: '#c9a961' },
@@ -47,9 +52,8 @@ function formatDate(iso) {
 
 function getNextReviewDate(lastStudied, reviewCount) {
   if (!lastStudied) return null;
-  const interval = REVIEW_INTERVALS[Math.min(reviewCount, REVIEW_INTERVALS.length - 1)];
   const date = new Date(lastStudied);
-  date.setDate(date.getDate() + interval);
+  date.setDate(date.getDate() + getReviewInterval(reviewCount));
   return date.toISOString();
 }
 
@@ -59,14 +63,34 @@ function getEffectiveKnowledge(topic) {
   return Math.max(1, Math.round(subs.reduce((a, st) => a + st.knowledge, 0) / subs.length));
 }
 
-function getReviewStatus(topic) {
-  if (!topic.lastStudied) return { status: 'new', days: null, label: 'Not started' };
-  const nextReview = getNextReviewDate(topic.lastStudied, topic.reviewCount || 0);
+function getEffectiveMinutes(topic) {
+  const subMins = (topic.subtopics || []).reduce((a, st) => a + (st.totalMinutes || 0), 0);
+  return (topic.totalMinutes || 0) + subMins;
+}
+
+function getReviewStatus(item) {
+  if (!item.lastStudied) return { status: 'new', days: null, label: 'Not started' };
+  const nextReview = getNextReviewDate(item.lastStudied, item.reviewCount || 0);
   const daysUntil = daysBetween(new Date(), nextReview);
   if (daysUntil < 0) return { status: 'overdue', days: Math.abs(daysUntil), label: `${Math.abs(daysUntil)}d overdue` };
   if (daysUntil === 0) return { status: 'today', days: 0, label: 'Review today' };
   if (daysUntil <= 2) return { status: 'soon', days: daysUntil, label: `In ${daysUntil}d` };
   return { status: 'scheduled', days: daysUntil, label: `In ${daysUntil}d` };
+}
+
+// For a chapter with subtopics, derive status from the most urgent subtopic
+const STATUS_PRIORITY = { overdue: 4, today: 3, soon: 2, scheduled: 1, new: 0 };
+function getEffectiveReviewStatus(topic) {
+  const subs = topic.subtopics || [];
+  if (subs.length === 0) return getReviewStatus(topic);
+  const candidates = [
+    ...(topic.lastStudied ? [getReviewStatus(topic)] : []),
+    ...subs.map(st => getReviewStatus(st)),
+  ];
+  if (candidates.length === 0) return { status: 'new', days: null, label: 'Not started' };
+  return candidates.reduce((best, s) =>
+    (STATUS_PRIORITY[s.status] || 0) > (STATUS_PRIORITY[best.status] || 0) ? s : best
+  );
 }
 
 // ============ MAIN APP ============
@@ -84,6 +108,9 @@ export default function StudyTracker() {
   const [showLogModal, setShowLogModal] = useState(false);
   const [showAddTopic, setShowAddTopic] = useState(false);
   const [activeSubtopic, setActiveSubtopic] = useState(null);
+  const [confirmUnlog, setConfirmUnlog] = useState(null); // sessionId to unlog
+  const [levelUpAnim, setLevelUpAnim] = useState(null);
+  const prevLevelRef = useRef(null);
 
   useEffect(() => {
     const data = loadData();
@@ -209,11 +236,13 @@ export default function StudyTracker() {
         yesterday.setDate(yesterday.getDate() - 1);
         newStreak = { count: lastDay === yesterday.toDateString() ? prev.streak.count + 1 : 1, lastDay: today };
       }
+      const nextDue = subtopic.lastStudied ? getNextReviewDate(subtopic.lastStudied, subtopic.reviewCount || 0) : null;
+      const advancedReview = !subtopic.lastStudied || !nextDue || new Date() >= new Date(nextDue);
       return {
         ...prev,
         xp: prev.xp + earnedXP,
         streak: newStreak,
-        sessions: [...prev.sessions, { id: `s_${Date.now()}`, subjectId, topicId, subtopicId, date: now, minutes, xpEarned: earnedXP }],
+        sessions: [...prev.sessions, { id: `s_${Date.now()}`, subjectId, topicId, subtopicId, date: now, minutes, xpEarned: earnedXP, advancedReview }],
         subjects: prev.subjects.map(s =>
           s.id === subjectId ? {
             ...s,
@@ -223,8 +252,7 @@ export default function StudyTracker() {
                 subtopics: (t.subtopics || []).map(st =>
                   st.id === subtopicId ? {
                     ...st,
-                    lastStudied: now,
-                    reviewCount: (st.reviewCount || 0) + 1,
+                    ...(advancedReview ? { lastStudied: now, reviewCount: (st.reviewCount || 0) + 1 } : {}),
                     knowledge: newKnowledge,
                     totalMinutes: (st.totalMinutes || 0) + minutes,
                   } : st
@@ -245,23 +273,20 @@ export default function StudyTracker() {
       const subject = prev.subjects.find(s => s.id === subjectId);
       const topic = subject.topics.find(t => t.id === topicId);
 
-      // XP calculation: 10 XP per 15 min + bonus for knowledge gains
       const minutesXP = Math.floor(minutes / 15) * 10;
       const knowledgeXP = Math.max(0, (newKnowledge - topic.knowledge)) * 25;
       const earnedXP = minutesXP + knowledgeXP + 5;
 
-      // Streak logic
       const lastDay = prev.streak.lastDay;
       let newStreak = prev.streak;
       if (lastDay !== today) {
         const yesterday = new Date();
         yesterday.setDate(yesterday.getDate() - 1);
-        const wasYesterday = lastDay === yesterday.toDateString();
-        newStreak = {
-          count: wasYesterday ? prev.streak.count + 1 : 1,
-          lastDay: today
-        };
+        newStreak = { count: lastDay === yesterday.toDateString() ? prev.streak.count + 1 : 1, lastDay: today };
       }
+
+      const nextDue = topic.lastStudied ? getNextReviewDate(topic.lastStudied, topic.reviewCount || 0) : null;
+      const advancedReview = !topic.lastStudied || !nextDue || new Date() >= new Date(nextDue);
 
       return {
         ...prev,
@@ -274,6 +299,7 @@ export default function StudyTracker() {
           date: now,
           minutes,
           xpEarned: earnedXP,
+          advancedReview,
         }],
         subjects: prev.subjects.map(s =>
           s.id === subjectId ? {
@@ -281,8 +307,7 @@ export default function StudyTracker() {
             topics: s.topics.map(t =>
               t.id === topicId ? {
                 ...t,
-                lastStudied: now,
-                reviewCount: (t.reviewCount || 0) + 1,
+                ...(advancedReview ? { lastStudied: now, reviewCount: (t.reviewCount || 0) + 1 } : {}),
                 knowledge: newKnowledge,
                 totalMinutes: (t.totalMinutes || 0) + minutes,
               } : t
@@ -293,28 +318,91 @@ export default function StudyTracker() {
     });
   };
 
-  // Derived: overdue and due today topics (and subtopics) across all subjects
-  const dueTopics = useMemo(() => {
-    const due = [];
+  const unlogSession = (sessionId) => {
+    setState(prev => {
+      const session = prev.sessions.find(s => s.id === sessionId);
+      if (!session) return prev;
+      const remaining = prev.sessions.filter(s => s.id !== sessionId);
+      const newXp = Math.max(0, prev.xp - session.xpEarned);
+      const subjects = prev.subjects.map(sub => {
+        if (sub.id !== session.subjectId) return sub;
+        return {
+          ...sub,
+          topics: sub.topics.map(t => {
+            if (t.id !== session.topicId) return t;
+            if (session.subtopicId) {
+              return {
+                ...t,
+                subtopics: (t.subtopics || []).map(st => {
+                  if (st.id !== session.subtopicId) return st;
+                  const advanced = session.advancedReview !== false;
+                  const stSessions = remaining.filter(r => r.subtopicId === st.id && r.advancedReview !== false).sort((a, b) => new Date(b.date) - new Date(a.date));
+                  return {
+                    ...st,
+                    totalMinutes: Math.max(0, (st.totalMinutes || 0) - session.minutes),
+                    ...(advanced ? { reviewCount: Math.max(0, (st.reviewCount || 0) - 1), lastStudied: stSessions[0]?.date ?? null } : {}),
+                  };
+                }),
+              };
+            }
+            const advanced = session.advancedReview !== false;
+            const tSessions = remaining.filter(r => r.topicId === t.id && !r.subtopicId && r.advancedReview !== false).sort((a, b) => new Date(b.date) - new Date(a.date));
+            return {
+              ...t,
+              totalMinutes: Math.max(0, (t.totalMinutes || 0) - session.minutes),
+              ...(advanced ? { reviewCount: Math.max(0, (t.reviewCount || 0) - 1), lastStudied: tSessions[0]?.date ?? null } : {}),
+            };
+          }),
+        };
+      });
+      return { ...prev, xp: newXp, sessions: remaining, subjects };
+    });
+  };
+
+  // Full review queue: every studied topic/subtopic, sorted by urgency then soonest first
+  const reviewQueue = useMemo(() => {
+    const items = [];
     state.subjects.forEach(s => {
       s.topics.forEach(t => {
         const review = getReviewStatus(t);
-        if (review.status === 'overdue' || review.status === 'today') {
-          due.push({ subject: s, topic: t, subtopic: null, review });
+        if (review.status !== 'new') {
+          items.push({ subject: s, topic: t, subtopic: null, review });
         }
         (t.subtopics || []).forEach(st => {
           const stReview = getReviewStatus(st);
-          if (stReview.status === 'overdue' || stReview.status === 'today') {
-            due.push({ subject: s, topic: t, subtopic: st, review: stReview });
+          if (stReview.status !== 'new') {
+            items.push({ subject: s, topic: t, subtopic: st, review: stReview });
           }
         });
       });
     });
-    return due.sort((a, b) => (b.review.days || 0) - (a.review.days || 0));
+    return items.sort((a, b) => {
+      const pa = STATUS_PRIORITY[a.review.status] || 0;
+      const pb = STATUS_PRIORITY[b.review.status] || 0;
+      if (pa !== pb) return pb - pa;
+      if (a.review.status === 'overdue') return (b.review.days || 0) - (a.review.days || 0);
+      return (a.review.days || 0) - (b.review.days || 0);
+    });
   }, [state.subjects]);
+
+  // Badge count: only overdue + today
+  const urgentCount = useMemo(() =>
+    reviewQueue.filter(i => i.review.status === 'overdue' || i.review.status === 'today').length,
+    [reviewQueue]
+  );
 
   const level = Math.floor(state.xp / 100) + 1;
   const xpInLevel = state.xp % 100;
+
+  useEffect(() => {
+    if (loading) return;
+    if (prevLevelRef.current !== null && level > prevLevelRef.current) {
+      setLevelUpAnim(level);
+      const t = setTimeout(() => setLevelUpAnim(null), 3500);
+      return () => clearTimeout(t);
+    }
+    prevLevelRef.current = level;
+  }, [level, loading]);
 
   if (loading) {
     return (
@@ -341,7 +429,7 @@ export default function StudyTracker() {
             <StatBadge label="Level" value={level} glyph="𓇳" />
             <StatBadge label="XP" value={`${xpInLevel}/100`} glyph="𓋹" />
             <StatBadge label="Streak" value={`${state.streak.count}d`} glyph="𓍱" />
-            <StatBadge label="Due" value={dueTopics.length} glyph="𓂀" urgent={dueTopics.length > 0} />
+            <StatBadge label="Due" value={urgentCount} glyph="𓂀" urgent={urgentCount > 0} />
           </div>
         </header>
 
@@ -350,7 +438,7 @@ export default function StudyTracker() {
             Dashboard
           </button>
           <button className={`nav-btn ${view === 'review' ? 'active' : ''}`} onClick={() => setView('review')}>
-            Review Queue {dueTopics.length > 0 && <span className="badge">{dueTopics.length}</span>}
+            Review Queue {urgentCount > 0 && <span className="badge">{urgentCount}</span>}
           </button>
           <button className={`nav-btn ${view === 'stats' ? 'active' : ''}`} onClick={() => setView('stats')}>
             Stats
@@ -368,6 +456,7 @@ export default function StudyTracker() {
           {view === 'dashboard' && activeSubject && (
             <SubjectView
               subject={state.subjects.find(s => s.id === activeSubject)}
+              sessions={state.sessions}
               onBack={() => setActiveSubject(null)}
               onAddTopic={() => setShowAddTopic(true)}
               onSelectTopic={(t) => setActiveTopic({ subjectId: activeSubject, topicId: t.id })}
@@ -386,12 +475,13 @@ export default function StudyTracker() {
                 setActiveSubtopic(st.id);
                 setShowLogModal(true);
               }}
+              onUnlogSession={(id) => setConfirmUnlog(id)}
             />
           )}
 
           {view === 'review' && (
             <ReviewView
-              dueTopics={dueTopics}
+              dueTopics={reviewQueue}
               onStudy={(subjectId, topicId, subtopicId) => {
                 setActiveTopic({ subjectId, topicId });
                 setActiveSubtopic(subtopicId || null);
@@ -434,6 +524,16 @@ export default function StudyTracker() {
             />
           );
         })()}
+
+        {confirmUnlog && (
+          <ConfirmModal
+            message="Are you sure you want to unlog this session? Your XP and stats will be updated."
+            onConfirm={() => { unlogSession(confirmUnlog); setConfirmUnlog(null); }}
+            onCancel={() => setConfirmUnlog(null)}
+          />
+        )}
+
+        {levelUpAnim && <LevelUpBanner level={levelUpAnim} />}
       </div>
     </>
   );
@@ -459,7 +559,7 @@ function SubjectGrid({ subjects, onSelect }) {
         const total = s.topics.length;
         const percent = total > 0 ? Math.round((s.topics.reduce((a, t) => a + getEffectiveKnowledge(t), 0) / (total * 5)) * 100) : 0;
         const due = s.topics.filter(t => {
-          const r = getReviewStatus(t);
+          const r = getEffectiveReviewStatus(t);
           return r.status === 'overdue' || r.status === 'today';
         }).length;
 
@@ -487,7 +587,7 @@ function SubjectGrid({ subjects, onSelect }) {
   );
 }
 
-function SubjectView({ subject, onBack, onAddTopic, onSelectTopic, onLogStudy, onDeleteTopic, onUpdateTopic, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic }) {
+function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onLogStudy, onDeleteTopic, onUpdateTopic, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic, onUnlogSession }) {
   const [expandedTopic, setExpandedTopic] = useState(null);
 
   return (
@@ -510,7 +610,7 @@ function SubjectView({ subject, onBack, onAddTopic, onSelectTopic, onLogStudy, o
       ) : (
         <div className="topic-list">
           {subject.topics.map(topic => {
-            const review = getReviewStatus(topic);
+            const review = getEffectiveReviewStatus(topic);
             const isExpanded = expandedTopic === topic.id;
             return (
               <div key={topic.id} className={`topic-card ${isExpanded ? 'expanded' : ''}`}>
@@ -522,7 +622,7 @@ function SubjectView({ subject, onBack, onAddTopic, onSelectTopic, onLogStudy, o
                       <span className={`review-tag status-${review.status}`}>
                         {review.label}
                       </span>
-                      {topic.totalMinutes > 0 && <span className="mins-tag">{topic.totalMinutes}min total</span>}
+                      {getEffectiveMinutes(topic) > 0 && <span className="mins-tag">{getEffectiveMinutes(topic)}min total</span>}
                     </div>
                   </div>
                   <button
@@ -606,17 +706,41 @@ function SubjectView({ subject, onBack, onAddTopic, onSelectTopic, onLogStudy, o
                         <strong>Reviews done:</strong> {topic.reviewCount || 0}
                       </div>
                       <div>
-                        <strong>Next interval:</strong> {REVIEW_INTERVALS[Math.min(topic.reviewCount || 0, REVIEW_INTERVALS.length - 1)]} days
+                        <strong>Next interval:</strong> {getReviewInterval(topic.reviewCount || 0)} days
                       </div>
                     </div>
 
                     <SubtopicSection
                       topic={topic}
+                      sessions={sessions}
                       onAddSubtopic={(name) => onAddSubtopic(topic.id, name)}
                       onDeleteSubtopic={(stid) => onDeleteSubtopic(topic.id, stid)}
                       onUpdateSubtopic={(stid, updates) => onUpdateSubtopic(topic.id, stid, updates)}
                       onLogSubtopic={(st) => onLogSubtopic(topic, st)}
+                      onUnlogSession={onUnlogSession}
                     />
+
+                    {(() => {
+                      const topicSessions = sessions
+                        .filter(s => s.topicId === topic.id && !s.subtopicId)
+                        .sort((a, b) => new Date(b.date) - new Date(a.date));
+                      if (topicSessions.length === 0) return null;
+                      return (
+                        <div className="detail-row">
+                          <label>Session history</label>
+                          <div className="session-list">
+                            {topicSessions.map(sess => (
+                              <div key={sess.id} className="session-item">
+                                <span className="session-date">{formatDate(sess.date)}</span>
+                                <span className="session-mins">{sess.minutes} min</span>
+                                <span className="session-xp">+{sess.xpEarned} XP</span>
+                                <button className="unlog-btn" onClick={() => onUnlogSession(sess.id)}>Unlog</button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     <button
                       className="delete-btn"
@@ -645,7 +769,7 @@ function KnowledgeBar({ level }) {
   );
 }
 
-function SubtopicSection({ topic, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic }) {
+function SubtopicSection({ topic, sessions, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic, onUnlogSession }) {
   const [expandedSt, setExpandedSt] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState('');
@@ -759,8 +883,29 @@ function SubtopicSection({ topic, onAddSubtopic, onDeleteSubtopic, onUpdateSubto
                 <div className="detail-row review-info">
                   <div><strong>Last studied:</strong> {formatDate(st.lastStudied)}</div>
                   <div><strong>Reviews done:</strong> {st.reviewCount || 0}</div>
-                  <div><strong>Next interval:</strong> {REVIEW_INTERVALS[Math.min(st.reviewCount || 0, REVIEW_INTERVALS.length - 1)]} days</div>
+                  <div><strong>Next interval:</strong> {getReviewInterval(st.reviewCount || 0)} days</div>
                 </div>
+                {(() => {
+                  const stSessions = (sessions || [])
+                    .filter(s => s.subtopicId === st.id)
+                    .sort((a, b) => new Date(b.date) - new Date(a.date));
+                  if (stSessions.length === 0) return null;
+                  return (
+                    <div className="detail-row">
+                      <label>Session history</label>
+                      <div className="session-list">
+                        {stSessions.map(sess => (
+                          <div key={sess.id} className="session-item">
+                            <span className="session-date">{formatDate(sess.date)}</span>
+                            <span className="session-mins">{sess.minutes} min</span>
+                            <span className="session-xp">+{sess.xpEarned} XP</span>
+                            <button className="unlog-btn" onClick={() => onUnlogSession(sess.id)}>Unlog</button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
                 <button className="delete-btn" onClick={() => { if (confirm(`Delete "${st.name}"?`)) onDeleteSubtopic(st.id); }}>
                   Delete subtopic
                 </button>
@@ -778,34 +923,51 @@ function ReviewView({ dueTopics, onStudy }) {
     return (
       <div className="empty">
         <div className="empty-glyph">𓋹</div>
-        <h2>All caught up</h2>
-        <p>No reviews due. The scrolls are in order.</p>
+        <h2>Nothing to review yet</h2>
+        <p>Study a chapter or subtopic and it will appear here.</p>
       </div>
     );
   }
+
+  const urgent = dueTopics.filter(i => i.review.status === 'overdue' || i.review.status === 'today');
+  const upcoming = dueTopics.filter(i => i.review.status === 'soon' || i.review.status === 'scheduled');
+
+  const renderCard = ({ subject, topic, subtopic, review }) => (
+    <div key={subtopic ? subtopic.id : topic.id} className="review-card" style={{ '--subject-color': subject.color }}>
+      <div className="review-card-left">
+        <span className="review-glyph">{subject.glyph}</span>
+        <div>
+          <div className="review-subject">{subject.name}</div>
+          <div className="review-topic">
+            {subtopic ? <>{topic.name} <span className="review-subtopic-arrow">›</span> {subtopic.name}</> : topic.name}
+          </div>
+        </div>
+      </div>
+      <div className="review-card-right">
+        <span className={`review-tag status-${review.status}`}>{review.label}</span>
+        <button className="log-btn" onClick={() => onStudy(subject.id, topic.id, subtopic?.id)}>Study</button>
+      </div>
+    </div>
+  );
+
   return (
     <div className="review-view">
-      <h2 className="section-title">Due for review</h2>
-      <p className="section-sub">Topics the forgetting curve says you need to revisit</p>
-      <div className="review-list">
-        {dueTopics.map(({ subject, topic, subtopic, review }) => (
-          <div key={subtopic ? subtopic.id : topic.id} className="review-card" style={{ '--subject-color': subject.color }}>
-            <div className="review-card-left">
-              <span className="review-glyph">{subject.glyph}</span>
-              <div>
-                <div className="review-subject">{subject.name}</div>
-                <div className="review-topic">
-                  {subtopic ? <>{topic.name} <span className="review-subtopic-arrow">›</span> {subtopic.name}</> : topic.name}
-                </div>
-              </div>
-            </div>
-            <div className="review-card-right">
-              <span className={`review-tag status-${review.status}`}>{review.label}</span>
-              <button className="log-btn" onClick={() => onStudy(subject.id, topic.id, subtopic?.id)}>Study</button>
-            </div>
-          </div>
-        ))}
-      </div>
+      <h2 className="section-title">Review queue</h2>
+      <p className="section-sub">Your full study schedule based on the forgetting curve</p>
+
+      {urgent.length > 0 && (
+        <>
+          <div className="review-section-label urgent-label">Due now ({urgent.length})</div>
+          <div className="review-list">{urgent.map(renderCard)}</div>
+        </>
+      )}
+
+      {upcoming.length > 0 && (
+        <>
+          <div className="review-section-label">{urgent.length > 0 ? 'Upcoming' : `Upcoming (${upcoming.length})`}</div>
+          <div className="review-list">{upcoming.map(renderCard)}</div>
+        </>
+      )}
     </div>
   );
 }
@@ -891,6 +1053,36 @@ function StatsView({ state }) {
             );
           })}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmModal({ message, onConfirm, onCancel }) {
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal confirm-modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-glyph" style={{ color: 'var(--terracotta)' }}>𓂀</div>
+        <h2>Are you sure?</h2>
+        <p className="confirm-message">{message}</p>
+        <div className="modal-actions">
+          <button className="btn-ghost" onClick={onCancel}>Cancel</button>
+          <button className="btn-danger" onClick={onConfirm}>Yes, unlog it</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LevelUpBanner({ level }) {
+  return (
+    <div className="level-up-overlay">
+      <div className="level-up-card">
+        <div className="level-up-rays" />
+        <div className="level-up-glyph">𓇳</div>
+        <div className="level-up-label">Level Up!</div>
+        <div className="level-up-num">Level {level}</div>
+        <div className="level-up-sub">The scrolls acknowledge your dedication</div>
       </div>
     </div>
   );
@@ -1547,7 +1739,19 @@ const styles = `
     margin-bottom: 1.5rem;
   }
 
-  .review-list { display: flex; flex-direction: column; gap: 0.75rem; }
+  .review-list { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1.5rem; }
+
+  .review-section-label {
+    font-family: var(--sans);
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin-bottom: 0.6rem;
+    margin-top: 0.25rem;
+  }
+
+  .review-section-label.urgent-label { color: var(--terracotta); }
 
   .review-card {
     display: flex;
@@ -2043,4 +2247,213 @@ const styles = `
     .log-btn { width: 100%; }
     .subtopic-add-row { flex-direction: column; }
   }
+
+  /* ── Session history ── */
+  .session-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .session-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    background: rgba(255,255,255,0.45);
+    border: 1px solid rgba(154,125,63,0.3);
+    border-radius: 2px;
+    font-family: var(--sans);
+    font-size: 0.8rem;
+    transition: background 0.2s;
+    flex-wrap: wrap;
+  }
+
+  .session-item:hover { background: rgba(255,255,255,0.7); }
+
+  .session-date { color: var(--ink-soft); flex: 1; min-width: 60px; }
+
+  .session-mins {
+    color: var(--ink);
+    font-weight: 600;
+    min-width: 55px;
+  }
+
+  .session-xp {
+    color: var(--gold-dark);
+    font-weight: 600;
+    min-width: 55px;
+  }
+
+  .unlog-btn {
+    margin-left: auto;
+    background: none;
+    border: 1px solid rgba(184,92,56,0.35);
+    color: var(--terracotta);
+    font-family: var(--sans);
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.2rem 0.55rem;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.15s;
+  }
+
+  .unlog-btn:hover {
+    background: var(--terracotta);
+    color: white;
+    transform: scale(1.04);
+  }
+
+  /* ── Confirm modal ── */
+  .confirm-modal { max-width: 380px; }
+
+  .confirm-message {
+    text-align: center;
+    font-family: var(--body);
+    color: var(--ink-soft);
+    font-size: 1rem;
+    line-height: 1.6;
+    margin-top: -0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .btn-danger {
+    padding: 0.6rem 1.25rem;
+    font-family: var(--sans);
+    font-size: 0.8rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.2s;
+    background: var(--terracotta);
+    border: 1px solid transparent;
+    color: white;
+  }
+
+  .btn-danger:hover { filter: brightness(1.1); transform: scale(1.03); }
+  .btn-danger:active { transform: scale(0.97); }
+
+  /* ── Level-up overlay ── */
+  .level-up-overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    pointer-events: none;
+    animation: lvlFadeOut 3.5s ease forwards;
+  }
+
+  @keyframes lvlFadeOut {
+    0%   { opacity: 0; }
+    10%  { opacity: 1; }
+    70%  { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  .level-up-card {
+    position: relative;
+    background: linear-gradient(135deg, #2b1d0e 0%, #1a0f06 100%);
+    border: 2px solid var(--gold);
+    border-radius: 4px;
+    padding: 2.5rem 3rem;
+    text-align: center;
+    box-shadow: 0 0 60px rgba(201,169,97,0.5), 0 20px 60px rgba(0,0,0,0.5);
+    animation: lvlCardIn 0.5s cubic-bezier(0.34,1.56,0.64,1) forwards;
+    overflow: hidden;
+  }
+
+  @keyframes lvlCardIn {
+    from { transform: scale(0.6) translateY(30px); opacity: 0; }
+    to   { transform: scale(1) translateY(0);      opacity: 1; }
+  }
+
+  .level-up-rays {
+    position: absolute;
+    inset: -50%;
+    background: conic-gradient(from 0deg, transparent 0deg, rgba(201,169,97,0.08) 10deg, transparent 20deg);
+    animation: spin 4s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .level-up-glyph {
+    position: relative;
+    font-size: 4rem;
+    color: var(--gold);
+    line-height: 1;
+    margin-bottom: 0.5rem;
+    animation: glyphPulse 1s ease-in-out infinite;
+  }
+
+  @keyframes glyphPulse {
+    0%, 100% { text-shadow: 0 0 20px rgba(201,169,97,0.6); }
+    50%       { text-shadow: 0 0 40px rgba(201,169,97,1); }
+  }
+
+  .level-up-label {
+    position: relative;
+    font-family: var(--sans);
+    font-size: 0.75rem;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    color: var(--gold);
+    margin-bottom: 0.25rem;
+  }
+
+  .level-up-num {
+    position: relative;
+    font-family: var(--display);
+    font-size: 3.5rem;
+    font-weight: 700;
+    color: white;
+    line-height: 1;
+    margin-bottom: 0.5rem;
+  }
+
+  .level-up-sub {
+    position: relative;
+    font-family: var(--body);
+    font-style: italic;
+    color: rgba(255,255,255,0.55);
+    font-size: 0.9rem;
+  }
+
+  /* ── Enhanced button animations ── */
+  .log-btn {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .log-btn::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0);
+    transition: background 0.15s;
+  }
+
+  .log-btn:active::after { background: rgba(255,255,255,0.2); }
+  .log-btn:active { transform: scale(0.96) !important; }
+
+  .btn-primary:active:not(:disabled) { transform: scale(0.96) !important; }
+  .btn-ghost:active { transform: scale(0.96); }
+
+  .add-btn:active { transform: scale(0.96); }
+  .back-btn { transition: all 0.2s; }
+  .back-btn:active { transform: translateX(-3px); }
+
+  .subject-card:active { transform: scale(0.98) !important; }
+
+  .nav-btn:active { transform: scale(0.96); }
+
+  .k-btn:active { transform: scale(0.9); }
+  .time-btn:active { transform: scale(0.93); }
+
+  .add-subtopic-btn:active { transform: scale(0.95); }
+  .delete-btn:active { transform: scale(0.96); }
 `;
