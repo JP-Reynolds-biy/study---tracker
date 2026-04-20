@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { supabase } from './supabase';
+import AuthScreen from './AuthScreen';
 
 // Spaced repetition: gaps between consecutive reviews
 // reviewCount=1→5d, 2→5d, 3→10d, 4→10d, 5+→30d (cumulative: day 5,10,20,30,60,90,120,150…)
@@ -20,6 +22,8 @@ const DEFAULT_SUBJECTS = [
 ];
 
 // ============ STORAGE HELPERS ============
+
+// localStorage — used as an offline fallback and for migration detection
 function loadData() {
   try {
     const raw = localStorage.getItem('tracker-state');
@@ -33,7 +37,33 @@ function saveData(state) {
   try {
     localStorage.setItem('tracker-state', JSON.stringify(state));
   } catch (e) {
-    console.error('Save failed', e);
+    console.error('localStorage save failed', e);
+  }
+}
+
+// Supabase — primary cloud store
+async function loadFromSupabase(userId) {
+  try {
+    const { data, error } = await supabase
+      .from('user_data')
+      .select('state')
+      .eq('user_id', userId)
+      .single();
+    // PGRST116 = no rows found (first-time user), not an error we care about
+    if (error && error.code !== 'PGRST116') throw error;
+    return data?.state ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveToSupabase(userId, state) {
+  try {
+    await supabase
+      .from('user_data')
+      .upsert({ user_id: userId, state, updated_at: new Date().toISOString() });
+  } catch (e) {
+    console.error('Supabase save failed', e);
   }
 }
 
@@ -111,16 +141,66 @@ export default function StudyTracker() {
   const [confirmUnlog, setConfirmUnlog] = useState(null); // sessionId to unlog
   const [levelUpAnim, setLevelUpAnim] = useState(null);
   const prevLevelRef = useRef(null);
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const saveTimeoutRef = useRef(null);
 
+  // Auth listener — keep user in sync with Supabase session
   useEffect(() => {
-    const data = loadData();
-    if (data) setState(data);
-    setLoading(false);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT') {
+        setUser(null);
+        // Reset to blank state so the next user doesn't see stale data
+        setState({
+          subjects: DEFAULT_SUBJECTS.map(s => ({ ...s, topics: [] })),
+          sessions: [],
+          xp: 0,
+          streak: { count: 0, lastDay: null },
+        });
+        setLoading(true);
+      } else if (session?.user) {
+        setUser(session.user);
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
+  // Load data once auth resolves and we have a user
   useEffect(() => {
-    if (!loading) saveData(state);
-  }, [state, loading]);
+    if (authLoading || !user) return;
+
+    (async () => {
+      let data = await loadFromSupabase(user.id);
+
+      if (!data) {
+        // First login: migrate any existing localStorage data into Supabase
+        const local = loadData();
+        if (local) {
+          data = local;
+          await saveToSupabase(user.id, local);
+        }
+      }
+
+      if (data) setState(data);
+      setLoading(false);
+    })();
+  }, [user, authLoading]);
+
+  // Persist every state change — localStorage immediately, Supabase debounced
+  useEffect(() => {
+    if (loading) return;
+    saveData(state);
+    if (user) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => saveToSupabase(user.id, state), 2000);
+    }
+  }, [state, loading, user]);
 
   const updateTopic = (subjectId, topicId, updates) => {
     setState(prev => ({
@@ -404,6 +484,16 @@ export default function StudyTracker() {
     prevLevelRef.current = level;
   }, [level, loading]);
 
+  if (authLoading) {
+    return (
+      <div style={{ minHeight: '100vh', background: '#1a1612', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ fontFamily: 'Georgia, serif', fontSize: '1.5rem', color: '#c9a961' }}>𓂀</div>
+      </div>
+    );
+  }
+
+  if (!user) return <AuthScreen />;
+
   if (loading) {
     return (
       <div style={{ minHeight: '100vh', background: 'var(--papyrus)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -430,6 +520,26 @@ export default function StudyTracker() {
             <StatBadge label="XP" value={`${xpInLevel}/100`} glyph="𓋹" />
             <StatBadge label="Streak" value={`${state.streak.count}d`} glyph="𓍱" />
             <StatBadge label="Due" value={urgentCount} glyph="𓂀" urgent={urgentCount > 0} />
+            <button
+              onClick={() => supabase.auth.signOut()}
+              title={user?.email}
+              style={{
+                background: 'none',
+                border: '1px solid rgba(201,169,97,0.25)',
+                borderRadius: 6,
+                color: 'rgba(201,169,97,0.6)',
+                fontFamily: 'var(--sans)',
+                fontSize: '0.7rem',
+                padding: '0.25rem 0.55rem',
+                cursor: 'pointer',
+                letterSpacing: '0.05em',
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => { e.target.style.borderColor = 'rgba(201,169,97,0.6)'; e.target.style.color = '#c9a961'; }}
+              onMouseLeave={e => { e.target.style.borderColor = 'rgba(201,169,97,0.25)'; e.target.style.color = 'rgba(201,169,97,0.6)'; }}
+            >
+              Sign out
+            </button>
           </div>
         </header>
 
