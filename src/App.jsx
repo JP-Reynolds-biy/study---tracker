@@ -98,6 +98,36 @@ function getEffectiveMinutes(topic) {
   return (topic.totalMinutes || 0) + subMins;
 }
 
+function getDaysUntilExam(examDate) {
+  if (!examDate) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const exam = new Date(examDate); exam.setHours(0, 0, 0, 0);
+  return Math.ceil((exam - today) / (1000 * 60 * 60 * 24));
+}
+
+function getWeekMinutes(sessions, subjectId) {
+  const weekAgo = new Date(); weekAgo.setDate(weekAgo.getDate() - 6); weekAgo.setHours(0, 0, 0, 0);
+  return sessions
+    .filter(s => s.subjectId === subjectId && new Date(s.date) >= weekAgo)
+    .reduce((a, s) => a + s.minutes, 0);
+}
+
+function KnowledgeSparkline({ history }) {
+  if (!history || history.length < 2) return null;
+  const vals = history.slice(-10).map(h => h.value);
+  const w = 60, h = 18, pad = 2;
+  const points = vals.map((v, i) => {
+    const x = pad + (i / (vals.length - 1)) * (w - pad * 2);
+    const y = pad + ((5 - v) / 4) * (h - pad * 2);
+    return `${x},${y}`;
+  }).join(' ');
+  return (
+    <svg width={w} height={h} className="sparkline">
+      <polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function getReviewStatus(item) {
   if (!item.lastStudied) return { status: 'new', days: null, label: 'Not started' };
   const nextReview = getNextReviewDate(item.lastStudied, item.reviewCount || 0);
@@ -196,6 +226,7 @@ export default function StudyTracker() {
     sessions: [],
     xp: 0,
     streak: { count: 0, lastDay: null },
+    exams: [],
   });
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState('dashboard'); // dashboard, subject, review
@@ -209,6 +240,7 @@ export default function StudyTracker() {
   const prevLevelRef = useRef(null);
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [isDemoMode, setIsDemoMode] = useState(false);
   const saveTimeoutRef = useRef(null);
 
   // Auth listener — keep user in sync with Supabase session
@@ -227,6 +259,7 @@ export default function StudyTracker() {
           sessions: [],
           xp: 0,
           streak: { count: 0, lastDay: null },
+          exams: [],
         });
         setLoading(true);
       } else if (session?.user) {
@@ -258,15 +291,29 @@ export default function StudyTracker() {
     })();
   }, [user, authLoading]);
 
+  // Demo mode: load from separate localStorage key, skip Supabase entirely
+  useEffect(() => {
+    if (!isDemoMode) return;
+    try {
+      const raw = localStorage.getItem('demo-tracker-state');
+      if (raw) setState(JSON.parse(raw));
+    } catch {}
+    setLoading(false);
+  }, [isDemoMode]);
+
   // Persist every state change — localStorage immediately, Supabase debounced
   useEffect(() => {
     if (loading) return;
+    if (isDemoMode) {
+      try { localStorage.setItem('demo-tracker-state', JSON.stringify(state)); } catch {}
+      return;
+    }
     saveData(state);
     if (user) {
       clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => saveToSupabase(user.id, state), 2000);
     }
-  }, [state, loading, user]);
+  }, [state, loading, user, isDemoMode]);
 
   const updateTopic = (subjectId, topicId, updates) => {
     setState(prev => ({
@@ -367,6 +414,31 @@ export default function StudyTracker() {
     }));
   };
 
+  const updateSubject = (subjectId, updates) => {
+    setState(prev => ({
+      ...prev,
+      subjects: prev.subjects.map(s => s.id === subjectId ? { ...s, ...updates } : s)
+    }));
+  };
+
+  const addExam = (name, date) => {
+    setState(prev => ({
+      ...prev,
+      exams: [...(prev.exams || []), { id: `ex_${Date.now()}`, name, date }],
+    }));
+  };
+
+  const updateExam = (id, updates) => {
+    setState(prev => ({
+      ...prev,
+      exams: (prev.exams || []).map(e => e.id === id ? { ...e, ...updates } : e),
+    }));
+  };
+
+  const deleteExam = (id) => {
+    setState(prev => ({ ...prev, exams: (prev.exams || []).filter(e => e.id !== id) }));
+  };
+
   const logSubtopicSession = (subjectId, topicId, subtopicId, minutes, newKnowledge) => {
     const now = new Date().toISOString();
     const sessionId = `s_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -404,6 +476,7 @@ export default function StudyTracker() {
                     ...(advancedReview ? { lastStudied: now, reviewCount: (st.reviewCount || 0) + 1 } : {}),
                     knowledge: newKnowledge,
                     totalMinutes: (st.totalMinutes || 0) + minutes,
+                    knowledgeHistory: [...(st.knowledgeHistory || []).slice(-19), { date: now, value: newKnowledge }],
                   } : st
                 )
               } : t
@@ -459,6 +532,7 @@ export default function StudyTracker() {
                 ...(advancedReview ? { lastStudied: now, reviewCount: (t.reviewCount || 0) + 1 } : {}),
                 knowledge: newKnowledge,
                 totalMinutes: (t.totalMinutes || 0) + minutes,
+                knowledgeHistory: [...(t.knowledgeHistory || []).slice(-19), { date: now, value: newKnowledge }],
               } : t
             )
           } : s
@@ -529,6 +603,9 @@ export default function StudyTracker() {
       const pa = STATUS_PRIORITY[a.review.status] || 0;
       const pb = STATUS_PRIORITY[b.review.status] || 0;
       if (pa !== pb) return pb - pa;
+      const aPri = a.topic.priority ? 1 : 0;
+      const bPri = b.topic.priority ? 1 : 0;
+      if (aPri !== bPri) return bPri - aPri;
       if (a.review.status === 'overdue') return (b.review.days || 0) - (a.review.days || 0);
       return (a.review.days || 0) - (b.review.days || 0);
     });
@@ -561,7 +638,7 @@ export default function StudyTracker() {
     );
   }
 
-  if (!user) return <AuthScreen />;
+  if (!user && !isDemoMode) return <AuthScreen onDemoMode={() => { setIsDemoMode(true); setAuthLoading(false); }} />;
 
   if (loading) {
     return (
@@ -589,7 +666,7 @@ export default function StudyTracker() {
             <StatBadge label="XP" value={`${xpInLevel}/100`} glyph="𓋹" />
             <StatBadge label="Streak" value={`${state.streak.count}d`} glyph="𓍱" />
             <StatBadge label="Due" value={urgentCount} glyph="𓂀" urgent={urgentCount > 0} />
-            <button
+            {!isDemoMode && <button
               onClick={() => supabase.auth.signOut()}
               title={user?.email}
               style={{
@@ -608,9 +685,20 @@ export default function StudyTracker() {
               onMouseLeave={e => { e.target.style.borderColor = 'rgba(201,169,97,0.25)'; e.target.style.color = 'rgba(201,169,97,0.6)'; }}
             >
               Sign out
-            </button>
+            </button>}
           </div>
         </header>
+
+        {isDemoMode && (
+          <div className="demo-banner">
+            <span>⚗ Demo mode — data is local only, nothing synced to any account</span>
+            <button className="demo-exit-btn" onClick={() => {
+              setIsDemoMode(false);
+              setLoading(true);
+              setState({ subjects: DEFAULT_SUBJECTS.map(s => ({ ...s, topics: [] })), sessions: [], xp: 0, streak: { count: 0, lastDay: null } });
+            }}>Sign in instead</button>
+          </div>
+        )}
 
         <nav className="nav">
           <button className={`nav-btn ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>
@@ -625,9 +713,26 @@ export default function StudyTracker() {
         </nav>
 
         <main className="main">
+          {view === 'dashboard' && !activeSubject && urgentCount > 0 && (
+            <div className="overdue-banner" onClick={() => setView('review')}>
+              <span className="overdue-banner-text">𓂀 {urgentCount} item{urgentCount !== 1 ? 's' : ''} due for review</span>
+              <span className="overdue-banner-cta">Open Review Queue →</span>
+            </div>
+          )}
+
+          {view === 'dashboard' && !activeSubject && (
+            <GlobalExams
+              exams={state.exams || []}
+              onAdd={addExam}
+              onUpdate={updateExam}
+              onDelete={deleteExam}
+            />
+          )}
+
           {view === 'dashboard' && !activeSubject && (
             <SubjectGrid
               subjects={state.subjects}
+              sessions={state.sessions}
               onSelect={(s) => { setActiveSubject(s.id); }}
             />
           )}
@@ -655,6 +760,7 @@ export default function StudyTracker() {
                 setShowLogModal(true);
               }}
               onUnlogSession={(id) => setConfirmUnlog(id)}
+              onUpdateSubject={(updates) => updateSubject(activeSubject, updates)}
               userId={user?.id}
             />
           )}
@@ -739,7 +845,118 @@ function StatBadge({ label, value, glyph, urgent }) {
   );
 }
 
-function SubjectGrid({ subjects, onSelect }) {
+function GlobalExams({ exams, onAdd, onUpdate, onDelete }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newDate, setNewDate] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [editDate, setEditDate] = useState('');
+
+  const handleAdd = () => {
+    if (!newName.trim() || !newDate) return;
+    onAdd(newName.trim(), newDate);
+    setNewName(''); setNewDate(''); setShowAdd(false);
+  };
+
+  const startEdit = (exam) => {
+    setEditingId(exam.id);
+    setEditName(exam.name);
+    setEditDate(exam.date);
+  };
+
+  const saveEdit = () => {
+    if (!editName.trim() || !editDate) return;
+    onUpdate(editingId, { name: editName.trim(), date: editDate });
+    setEditingId(null);
+  };
+
+  const sorted = [...exams].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  return (
+    <div className="global-exams">
+      <div className="global-exams-header">
+        <span className="global-exams-title">Upcoming Exams</span>
+        <button className="global-exams-add-btn" onClick={() => setShowAdd(v => !v)}>+ Add exam</button>
+      </div>
+
+      {showAdd && (
+        <div className="global-exam-form">
+          <input
+            autoFocus
+            type="text"
+            placeholder="Exam name (e.g. Term 1, Summer)"
+            value={newName}
+            onChange={e => setNewName(e.target.value)}
+            className="global-exam-input"
+            onKeyDown={e => { if (e.key === 'Enter') handleAdd(); if (e.key === 'Escape') setShowAdd(false); }}
+          />
+          <input
+            type="date"
+            value={newDate}
+            onChange={e => setNewDate(e.target.value)}
+            className="global-exam-input"
+          />
+          <button className="btn-primary" onClick={handleAdd} disabled={!newName.trim() || !newDate}>Add</button>
+          <button className="btn-ghost" onClick={() => setShowAdd(false)}>Cancel</button>
+        </div>
+      )}
+
+      {sorted.length > 0 && (
+        <div className="global-exam-list">
+          {sorted.map(exam => {
+            const days = getDaysUntilExam(exam.date);
+            const past = days !== null && days < 0;
+            const urgent = days !== null && days <= 14 && !past;
+            if (editingId === exam.id) {
+              return (
+                <div key={exam.id} className="global-exam-card editing">
+                  <input
+                    autoFocus
+                    type="text"
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    className="global-exam-input"
+                    onKeyDown={e => { if (e.key === 'Enter') saveEdit(); if (e.key === 'Escape') setEditingId(null); }}
+                  />
+                  <input
+                    type="date"
+                    value={editDate}
+                    onChange={e => setEditDate(e.target.value)}
+                    className="global-exam-input"
+                  />
+                  <button className="btn-primary" style={{ padding: '0.3rem 0.7rem', fontSize: '0.78rem' }} onClick={saveEdit}>Save</button>
+                  <button className="btn-ghost" style={{ padding: '0.3rem 0.7rem', fontSize: '0.78rem' }} onClick={() => setEditingId(null)}>Cancel</button>
+                </div>
+              );
+            }
+            return (
+              <div key={exam.id} className={`global-exam-card ${urgent ? 'urgent' : ''} ${past ? 'past' : ''}`}>
+                <div className="global-exam-info">
+                  <span className="global-exam-name">{exam.name}</span>
+                  <span className="global-exam-date-str">{new Date(exam.date).toLocaleDateString('en-IE', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                </div>
+                <div className="global-exam-right">
+                  <span className="global-exam-countdown">
+                    {days === 0 ? 'Today!' : past ? `${Math.abs(days)}d ago` : `${days} day${days !== 1 ? 's' : ''}`}
+                  </span>
+                  <button className="global-exam-edit-btn" onClick={() => startEdit(exam)} title="Edit">✎</button>
+                  <button className="global-exam-del-btn" onClick={() => onDelete(exam.id)} title="Delete">✕</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {sorted.length === 0 && !showAdd && (
+        <p className="global-exams-empty">No exams added yet — click "Add exam" to track a Term 1, Summer, etc.</p>
+      )}
+    </div>
+  );
+}
+
+function SubjectGrid({ subjects, sessions, onSelect }) {
   return (
     <div className="subject-grid">
       {subjects.map((s, i) => {
@@ -749,6 +966,10 @@ function SubjectGrid({ subjects, onSelect }) {
           const r = getEffectiveReviewStatus(t);
           return r.status === 'overdue' || r.status === 'today';
         }).length;
+        const daysToExam = getDaysUntilExam(s.examDate);
+        const weekMins = getWeekMinutes(sessions, s.id);
+        const goalMins = s.weeklyGoalMinutes || 0;
+        const goalPct = goalMins > 0 ? Math.min(100, Math.round((weekMins / goalMins) * 100)) : 0;
 
         return (
           <button
@@ -762,11 +983,24 @@ function SubjectGrid({ subjects, onSelect }) {
             <div className="subject-meta">
               <span>{total} topics</span>
               {due > 0 && <span className="due-dot">{due} due</span>}
+              {daysToExam !== null && daysToExam >= 0 && (
+                <span className={`exam-dot ${daysToExam <= 7 ? 'urgent' : ''}`}>
+                  {daysToExam === 0 ? 'Exam today!' : `${daysToExam}d to exam`}
+                </span>
+              )}
             </div>
             <div className="progress-bar">
               <div className="progress-fill" style={{ width: `${percent}%` }} />
             </div>
             <div className="subject-percent">{percent}% mastered</div>
+            {goalMins > 0 && (
+              <div className="goal-row">
+                <div className="goal-track">
+                  <div className="goal-fill" style={{ width: `${goalPct}%`, background: s.color }} />
+                </div>
+                <span className="goal-label">{weekMins}/{goalMins}min this week</span>
+              </div>
+            )}
           </button>
         );
       })}
@@ -774,19 +1008,62 @@ function SubjectGrid({ subjects, onSelect }) {
   );
 }
 
-function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onLogStudy, onDeleteTopic, onUpdateTopic, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic, onUnlogSession, userId }) {
+function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onLogStudy, onDeleteTopic, onUpdateTopic, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic, onUnlogSession, onUpdateSubject, userId }) {
   const [expandedTopic, setExpandedTopic] = useState(null);
+  const daysToExam = getDaysUntilExam(subject.examDate);
+  const weekMins = getWeekMinutes(sessions, subject.id);
+  const goalMins = subject.weeklyGoalMinutes || 0;
+  const goalPct = goalMins > 0 ? Math.min(100, Math.round((weekMins / goalMins) * 100)) : 0;
 
   return (
     <div className="subject-view" style={{ '--subject-color': subject.color }}>
       <button className="back-btn" onClick={onBack}>← All subjects</button>
       <div className="subject-header">
         <div className="subject-glyph-lg">{subject.glyph}</div>
-        <div>
+        <div className="subject-header-text">
           <h2 className="subject-title">{subject.name}</h2>
           <p className="subject-sub">{subject.topics.length} chapters tracked</p>
+          {daysToExam !== null && daysToExam >= 0 && (
+            <p className={`exam-countdown ${daysToExam <= 7 ? 'urgent' : ''}`}>
+              {daysToExam === 0 ? '⚑ Exam today!' : `⚑ ${daysToExam} day${daysToExam !== 1 ? 's' : ''} until exam`}
+            </p>
+          )}
         </div>
         <button className="add-btn" onClick={onAddTopic}>+ Add chapter</button>
+      </div>
+      <div className="subject-settings">
+        <div className="setting-item">
+          <label className="setting-label">Exam date</label>
+          <input
+            type="date"
+            className="setting-input"
+            value={subject.examDate || ''}
+            onChange={e => onUpdateSubject({ examDate: e.target.value || null })}
+          />
+        </div>
+        <div className="setting-item">
+          <label className="setting-label">Weekly goal</label>
+          <div className="setting-goal-row">
+            <input
+              type="number"
+              className="setting-input setting-input-sm"
+              value={subject.weeklyGoalMinutes || ''}
+              onChange={e => onUpdateSubject({ weeklyGoalMinutes: parseInt(e.target.value) || 0 })}
+              placeholder="0"
+              min="0"
+              max="1200"
+            />
+            <span className="setting-unit">min/week</span>
+          </div>
+        </div>
+        {goalMins > 0 && (
+          <div className="setting-goal-progress">
+            <div className="goal-track" style={{ flex: 1 }}>
+              <div className="goal-fill" style={{ width: `${goalPct}%` }} />
+            </div>
+            <span className="goal-label">{weekMins}/{goalMins}min this week ({goalPct}%)</span>
+          </div>
+        )}
       </div>
 
       {subject.topics.length === 0 ? (
@@ -803,13 +1080,28 @@ function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onL
               <div key={topic.id} className={`topic-card ${isExpanded ? 'expanded' : ''}`}>
                 <div className="topic-header" onClick={() => setExpandedTopic(isExpanded ? null : topic.id)}>
                   <div className="topic-main">
-                    <h3 className="topic-name">{topic.name}</h3>
+                    <div className="topic-name-row">
+                      <button
+                        className={`priority-btn ${topic.priority ? 'active' : ''}`}
+                        onClick={e => { e.stopPropagation(); onUpdateTopic(topic.id, { priority: !topic.priority }); }}
+                        title={topic.priority ? 'Remove priority' : 'Mark as priority'}
+                      >⚑</button>
+                      <h3 className="topic-name">{topic.name}</h3>
+                    </div>
                     <div className="topic-meta">
                       <KnowledgeBar level={getEffectiveKnowledge(topic)} />
                       <span className={`review-tag status-${review.status}`}>
                         {review.label}
                       </span>
                       {getEffectiveMinutes(topic) > 0 && <span className="mins-tag">{getEffectiveMinutes(topic)}min total</span>}
+                      {topic.examDate && (() => {
+                        const d = getDaysUntilExam(topic.examDate);
+                        if (d === null || d < 0) return null;
+                        return <span className={`exam-dot ${d <= 7 ? 'urgent' : ''}`}>{d === 0 ? 'Exam today!' : `${d}d to test`}</span>;
+                      })()}
+                      {(topic.knowledgeHistory || []).length > 1 && (
+                        <KnowledgeSparkline history={topic.knowledgeHistory} />
+                      )}
                     </div>
                   </div>
                   <button
@@ -893,6 +1185,69 @@ function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onL
                       </div>
                       <div>
                         <strong>Next interval:</strong> {getReviewInterval(topic.reviewCount || 0)} days
+                      </div>
+                    </div>
+
+                    <div className="detail-row">
+                      <label>Chapter exam</label>
+                      <div className="chapter-exam-section">
+                        <div className="chapter-exam-date-row">
+                          <input
+                            type="date"
+                            className="setting-input"
+                            value={topic.examDate || ''}
+                            onChange={e => onUpdateTopic(topic.id, { examDate: e.target.value || null })}
+                          />
+                          {topic.examDate && (() => {
+                            const d = getDaysUntilExam(topic.examDate);
+                            if (d === null) return null;
+                            return (
+                              <span className={`chapter-exam-countdown ${d <= 7 ? 'urgent' : ''}`}>
+                                {d === 0 ? 'Today!' : d < 0 ? `${Math.abs(d)}d ago` : `${d} day${d !== 1 ? 's' : ''} away`}
+                              </span>
+                            );
+                          })()}
+                          {topic.examDate && (
+                            <button className="chapter-exam-clear" onClick={() => onUpdateTopic(topic.id, { examDate: null, examSubtopics: [] })} title="Clear exam date">✕</button>
+                          )}
+                        </div>
+                        {(topic.subtopics || []).length > 0 && (
+                          <div className="chapter-exam-subtopics">
+                            <div className="chapter-exam-sub-header">
+                              <span className="chapter-exam-sub-label">Subtopics in this exam:</span>
+                              <div className="chapter-exam-sub-btns">
+                                <button
+                                  className="group-select-btn"
+                                  onClick={() => onUpdateTopic(topic.id, { examSubtopics: topic.subtopics.map(st => st.id) })}
+                                >All</button>
+                                <button
+                                  className="group-select-btn"
+                                  onClick={() => onUpdateTopic(topic.id, { examSubtopics: [] })}
+                                >None</button>
+                              </div>
+                            </div>
+                            <div className="chapter-exam-sub-list">
+                              {topic.subtopics.map(st => {
+                                const checked = (topic.examSubtopics || []).includes(st.id);
+                                return (
+                                  <label key={st.id} className={`chapter-exam-sub-item ${checked ? 'checked' : ''}`}>
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() => {
+                                        const cur = topic.examSubtopics || [];
+                                        onUpdateTopic(topic.id, {
+                                          examSubtopics: checked ? cur.filter(x => x !== st.id) : [...cur, st.id]
+                                        });
+                                      }}
+                                    />
+                                    <span>{st.name}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -1119,11 +1474,14 @@ function ReviewView({ dueTopics, onStudy }) {
   const upcoming = dueTopics.filter(i => i.review.status === 'soon' || i.review.status === 'scheduled');
 
   const renderCard = ({ subject, topic, subtopic, review }) => (
-    <div key={subtopic ? subtopic.id : topic.id} className="review-card" style={{ '--subject-color': subject.color }}>
+    <div key={subtopic ? subtopic.id : topic.id} className={`review-card ${topic.priority ? 'priority' : ''}`} style={{ '--subject-color': subject.color }}>
       <div className="review-card-left">
         <span className="review-glyph">{subject.glyph}</span>
         <div>
-          <div className="review-subject">{subject.name}</div>
+          <div className="review-subject">
+            {subject.name}
+            {topic.priority && <span className="review-priority-flag">⚑</span>}
+          </div>
           <div className="review-topic">
             {subtopic ? <>{topic.name} <span className="review-subtopic-arrow">›</span> {subtopic.name}</> : topic.name}
           </div>
@@ -1214,6 +1572,18 @@ function StatsView({ state, onImport }) {
     topics: s.topics.length,
   })).sort((a, b) => b.minutes - a.minutes);
 
+  const heatmap = useMemo(() => {
+    const days = 91;
+    const cells = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i); d.setHours(0, 0, 0, 0);
+      const dayStr = d.toDateString();
+      const mins = state.sessions.filter(s => new Date(s.date).toDateString() === dayStr).reduce((a, s) => a + s.minutes, 0);
+      cells.push({ date: d, mins, label: d.toLocaleDateString('en-IE', { day: 'numeric', month: 'short' }) });
+    }
+    return cells;
+  }, [state.sessions]);
+
   return (
     <div className="stats-view">
       <div className="stats-header">
@@ -1277,6 +1647,27 @@ function StatsView({ state, onImport }) {
               </div>
             );
           })}
+        </div>
+      </div>
+
+      <div className="chart-card">
+        <h3>Activity — last 91 days</h3>
+        <div className="heatmap">
+          {heatmap.map((cell, i) => {
+            const intensity = cell.mins === 0 ? 0 : cell.mins < 30 ? 1 : cell.mins < 60 ? 2 : cell.mins < 120 ? 3 : 4;
+            return (
+              <div
+                key={i}
+                className={`heat-cell heat-${intensity}`}
+                title={`${cell.label}: ${cell.mins}min`}
+              />
+            );
+          })}
+        </div>
+        <div className="heatmap-legend">
+          <span>Less</span>
+          {[0,1,2,3,4].map(n => <div key={n} className={`heat-cell heat-${n}`} />)}
+          <span>More</span>
         </div>
       </div>
     </div>
@@ -1343,8 +1734,29 @@ function LogStudyModal({ topic, subject, onLog, onClose, subtopics }) {
   const [selectedIds, setSelectedIds] = useState(() =>
     subtopics ? subtopics.map(st => st.id) : null
   );
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [timerSecs, setTimerSecs] = useState(0);
+  const timerRef = useRef(null);
 
   const isGroupMode = !!subtopics;
+
+  useEffect(() => {
+    if (timerRunning) {
+      timerRef.current = setInterval(() => setTimerSecs(s => s + 1), 1000);
+    } else {
+      clearInterval(timerRef.current);
+    }
+    return () => clearInterval(timerRef.current);
+  }, [timerRunning]);
+
+  const stopTimer = () => {
+    setTimerRunning(false);
+    const m = Math.max(1, Math.round(timerSecs / 60));
+    setMinutes(m);
+    setTimerSecs(0);
+  };
+
+  const timerDisplay = `${String(Math.floor(timerSecs / 60)).padStart(2, '0')}:${String(timerSecs % 60).padStart(2, '0')}`;
 
   const minutesEach = selectedIds && selectedIds.length > 0 ? Math.max(1, Math.round(minutes / selectedIds.length)) : minutes;
   const xpPreview = isGroupMode
@@ -1394,6 +1806,19 @@ function LogStudyModal({ topic, subject, onLog, onClose, subtopics }) {
             </div>
           </div>
         )}
+
+        <div className="timer-row">
+          {timerRunning ? (
+            <>
+              <span className="timer-display">{timerDisplay}</span>
+              <button className="timer-stop-btn" onClick={stopTimer}>Stop & fill</button>
+            </>
+          ) : (
+            <button className="timer-start-btn" onClick={() => setTimerRunning(true)}>
+              ▶ Start timer
+            </button>
+          )}
+        </div>
 
         <label className="form-label">How long did you study?</label>
         <div className="time-picker">
@@ -2943,4 +3368,420 @@ const styles = `
     border-color: var(--gold);
     background: rgba(201,169,97,0.08);
   }
+
+  /* ── Global exams ── */
+  .global-exams {
+    margin-bottom: 1.5rem;
+    border: 1px solid rgba(201,169,97,0.25);
+    border-radius: 4px;
+    background: rgba(201,169,97,0.04);
+    overflow: hidden;
+  }
+  .global-exams-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid rgba(201,169,97,0.18);
+    background: rgba(201,169,97,0.07);
+  }
+  .global-exams-title {
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-soft);
+    font-weight: 600;
+  }
+  .global-exams-add-btn {
+    background: none;
+    border: 1px solid rgba(201,169,97,0.4);
+    border-radius: 3px;
+    color: var(--gold-dark);
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    padding: 0.2rem 0.6rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    letter-spacing: 0.04em;
+  }
+  .global-exams-add-btn:hover { background: rgba(201,169,97,0.12); }
+  .global-exams-empty {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    padding: 0.75rem 1rem;
+    margin: 0;
+    font-style: italic;
+  }
+  .global-exam-form {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid rgba(201,169,97,0.15);
+  }
+  .global-exam-input {
+    padding: 0.35rem 0.6rem;
+    border: 1px solid var(--gold-dark);
+    border-radius: 3px;
+    background: var(--papyrus);
+    font-family: var(--sans);
+    font-size: 0.82rem;
+    color: var(--ink);
+    flex: 1;
+    min-width: 120px;
+  }
+  .global-exam-list { padding: 0.4rem 0; }
+  .global-exam-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.55rem 1rem;
+    border-left: 3px solid transparent;
+    transition: background 0.1s;
+    gap: 0.75rem;
+  }
+  .global-exam-card:hover { background: rgba(201,169,97,0.06); }
+  .global-exam-card.urgent { border-left-color: var(--terracotta); }
+  .global-exam-card.past { opacity: 0.5; }
+  .global-exam-card.editing {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-left-color: var(--gold-dark);
+  }
+  .global-exam-info { display: flex; flex-direction: column; gap: 0.1rem; flex: 1; }
+  .global-exam-name {
+    font-family: var(--body);
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .global-exam-date-str {
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    color: var(--ink-soft);
+  }
+  .global-exam-right { display: flex; align-items: center; gap: 0.5rem; }
+  .global-exam-countdown {
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--gold-dark);
+    white-space: nowrap;
+  }
+  .global-exam-card.urgent .global-exam-countdown { color: var(--terracotta); }
+  .global-exam-edit-btn, .global-exam-del-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--ink-soft);
+    opacity: 0.5;
+    padding: 0.1rem 0.25rem;
+    transition: opacity 0.15s;
+  }
+  .global-exam-edit-btn:hover, .global-exam-del-btn:hover { opacity: 1; }
+  .global-exam-del-btn:hover { color: var(--terracotta); }
+
+  /* ── Chapter exam section in topic details ── */
+  .chapter-exam-section { display: flex; flex-direction: column; gap: 0.6rem; }
+  .chapter-exam-date-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+  .chapter-exam-countdown {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--gold-dark);
+    padding: 0.15rem 0.45rem;
+    border: 1px solid rgba(201,169,97,0.4);
+    border-radius: 3px;
+    background: rgba(201,169,97,0.08);
+  }
+  .chapter-exam-countdown.urgent { color: var(--terracotta); border-color: rgba(184,92,56,0.4); background: rgba(184,92,56,0.07); }
+  .chapter-exam-clear {
+    background: none;
+    border: none;
+    color: var(--ink-soft);
+    opacity: 0.5;
+    cursor: pointer;
+    font-size: 0.8rem;
+    padding: 0.1rem 0.3rem;
+    transition: opacity 0.15s;
+  }
+  .chapter-exam-clear:hover { opacity: 1; color: var(--terracotta); }
+  .chapter-exam-subtopics { margin-top: 0.35rem; }
+  .chapter-exam-sub-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.4rem;
+  }
+  .chapter-exam-sub-btns { display: flex; gap: 0.35rem; }
+  .chapter-exam-sub-label {
+    font-family: var(--sans);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-soft);
+  }
+  .chapter-exam-sub-list { display: flex; flex-direction: column; gap: 0.15rem; }
+  .chapter-exam-sub-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--sans);
+    font-size: 0.82rem;
+    color: var(--ink-soft);
+    cursor: pointer;
+    padding: 0.25rem 0.4rem;
+    border-radius: 3px;
+    transition: background 0.1s;
+  }
+  .chapter-exam-sub-item:hover { background: rgba(201,169,97,0.08); }
+  .chapter-exam-sub-item.checked { color: var(--ink); font-weight: 500; }
+  .chapter-exam-sub-item input[type="checkbox"] {
+    accent-color: var(--subject-color, var(--gold-dark));
+    width: 13px; height: 13px; flex-shrink: 0; cursor: pointer;
+  }
+
+  /* ── Demo mode banner ── */
+  .demo-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(90, 122, 158, 0.12);
+    border-bottom: 1px solid rgba(90, 122, 158, 0.3);
+    padding: 0.4rem 1.5rem;
+    font-family: var(--sans);
+    font-size: 0.75rem;
+    color: #5a7a9e;
+    gap: 1rem;
+  }
+  .demo-exit-btn {
+    background: none;
+    border: 1px solid rgba(90,122,158,0.4);
+    border-radius: 3px;
+    color: #5a7a9e;
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    padding: 0.2rem 0.6rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .demo-exit-btn:hover { background: rgba(90,122,158,0.15); }
+
+  /* ── Overdue banner ── */
+  .overdue-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(184, 92, 56, 0.12);
+    border: 1px solid rgba(184, 92, 56, 0.4);
+    border-radius: 4px;
+    padding: 0.65rem 1rem;
+    margin-bottom: 1.25rem;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .overdue-banner:hover { background: rgba(184, 92, 56, 0.2); }
+  .overdue-banner-text {
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    color: var(--terracotta);
+    font-weight: 600;
+  }
+  .overdue-banner-cta {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--terracotta);
+    opacity: 0.8;
+  }
+
+  /* ── Exam + goal on subject cards ── */
+  .exam-dot {
+    font-family: var(--sans);
+    font-size: 0.65rem;
+    color: var(--gold-dark);
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.35rem;
+    border: 1px solid rgba(201,169,97,0.4);
+    border-radius: 2px;
+  }
+  .exam-dot.urgent { color: var(--terracotta); border-color: rgba(184,92,56,0.5); }
+  .goal-row { margin-top: 0.5rem; width: 100%; }
+  .goal-track {
+    height: 4px;
+    background: rgba(43,29,14,0.12);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 0.25rem;
+  }
+  .goal-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--subject-color, var(--gold));
+    transition: width 0.4s ease;
+  }
+  .goal-label {
+    font-family: var(--sans);
+    font-size: 0.65rem;
+    color: var(--ink-soft);
+  }
+
+  /* ── Subject view settings row ── */
+  .subject-header-text { flex: 1; }
+  .exam-countdown {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--gold-dark);
+    margin: 0.2rem 0 0;
+  }
+  .exam-countdown.urgent { color: var(--terracotta); font-weight: 600; }
+  .subject-settings {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.65rem 1rem;
+    background: rgba(201,169,97,0.07);
+    border: 1px solid rgba(201,169,97,0.2);
+    border-radius: 4px;
+    margin-bottom: 1.25rem;
+  }
+  .setting-item { display: flex; align-items: center; gap: 0.5rem; }
+  .setting-label {
+    font-family: var(--sans);
+    font-size: 0.68rem;
+    color: var(--ink-soft);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+  }
+  .setting-input {
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--gold-dark);
+    border-radius: 2px;
+    background: var(--papyrus);
+    font-family: var(--sans);
+    font-size: 0.8rem;
+    color: var(--ink);
+  }
+  .setting-input-sm { width: 64px; }
+  .setting-goal-row { display: flex; align-items: center; gap: 0.35rem; }
+  .setting-unit { font-family: var(--sans); font-size: 0.75rem; color: var(--ink-soft); }
+  .setting-goal-progress { display: flex; align-items: center; gap: 0.6rem; flex: 1; min-width: 180px; }
+
+  /* ── Priority flag ── */
+  .topic-name-row { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.2rem; }
+  .priority-btn {
+    background: none;
+    border: none;
+    font-size: 0.9rem;
+    color: rgba(43,29,14,0.2);
+    cursor: pointer;
+    padding: 0 0.1rem;
+    line-height: 1;
+    transition: color 0.15s, transform 0.1s;
+    flex-shrink: 0;
+  }
+  .priority-btn:hover { color: var(--gold-dark); }
+  .priority-btn.active { color: var(--terracotta); }
+  .priority-btn:active { transform: scale(0.85); }
+  .review-priority-flag {
+    color: var(--terracotta);
+    font-size: 0.75rem;
+    margin-left: 0.35rem;
+  }
+  .review-card.priority {
+    border-left: 3px solid var(--terracotta);
+    padding-left: calc(1rem - 3px);
+  }
+
+  /* ── Knowledge sparkline ── */
+  .sparkline { color: var(--subject-color, var(--gold-dark)); opacity: 0.7; vertical-align: middle; }
+
+  /* ── Study timer ── */
+  .timer-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    padding: 0.55rem 0.75rem;
+    background: rgba(201,169,97,0.08);
+    border: 1px solid rgba(201,169,97,0.25);
+    border-radius: 4px;
+  }
+  .timer-start-btn {
+    background: none;
+    border: 1px solid var(--gold-dark);
+    border-radius: 3px;
+    padding: 0.35rem 0.8rem;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    cursor: pointer;
+    transition: all 0.15s;
+    letter-spacing: 0.04em;
+  }
+  .timer-start-btn:hover { background: rgba(201,169,97,0.15); color: var(--ink); }
+  .timer-display {
+    font-family: var(--sans);
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: 0.05em;
+    flex: 1;
+    text-align: center;
+  }
+  .timer-stop-btn {
+    background: var(--terracotta);
+    border: none;
+    border-radius: 3px;
+    padding: 0.35rem 0.8rem;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: white;
+    cursor: pointer;
+    transition: filter 0.15s;
+  }
+  .timer-stop-btn:hover { filter: brightness(1.1); }
+
+  /* ── Activity heatmap ── */
+  .heatmap {
+    display: grid;
+    grid-template-columns: repeat(13, 1fr);
+    gap: 3px;
+    margin-top: 0.75rem;
+  }
+  .heat-cell {
+    aspect-ratio: 1;
+    border-radius: 2px;
+    background: rgba(43,29,14,0.07);
+    cursor: default;
+    transition: transform 0.1s;
+  }
+  .heat-cell:hover { transform: scale(1.3); z-index: 1; position: relative; }
+  .heat-0 { background: rgba(43,29,14,0.07); }
+  .heat-1 { background: rgba(201,169,97,0.3); }
+  .heat-2 { background: rgba(201,169,97,0.55); }
+  .heat-3 { background: rgba(201,169,97,0.78); }
+  .heat-4 { background: var(--gold-dark); }
+  .heatmap-legend {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 0.5rem;
+    justify-content: flex-end;
+  }
+  .heatmap-legend span {
+    font-family: var(--sans);
+    font-size: 0.65rem;
+    color: var(--ink-soft);
+    margin: 0 0.2rem;
+  }
+  .heatmap-legend .heat-cell { width: 12px; height: 12px; flex-shrink: 0; }
 `;

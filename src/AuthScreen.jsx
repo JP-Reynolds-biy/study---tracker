@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { supabase } from './supabase';
 
-export default function AuthScreen() {
+export default function AuthScreen({ onDemoMode }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [mode, setMode] = useState('login'); // 'login' | 'signup'
@@ -117,6 +117,28 @@ export default function AuthScreen() {
             {mode === 'login' ? 'Sign Up' : 'Sign In'}
           </button>
         </p>
+
+        <div style={{ borderTop: '1px solid #3a3028', marginTop: '1.25rem', paddingTop: '1.25rem', textAlign: 'center' }}>
+          <button
+            onClick={onDemoMode}
+            style={{
+              background: 'none',
+              border: '1px solid #3a3028',
+              borderRadius: 7,
+              color: '#7a6e60',
+              fontFamily: 'Georgia, serif',
+              fontSize: '0.83rem',
+              padding: '0.5rem 1.25rem',
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+              width: '100%',
+            }}
+            onMouseEnter={e => { e.target.style.borderColor = '#5a4a2a'; e.target.style.color = '#a89070'; }}
+            onMouseLeave={e => { e.target.style.borderColor = '#3a3028'; e.target.style.color = '#7a6e60'; }}
+          >
+            Try demo mode (no account needed)
+          </button>
+        </div>
       </div>
     </div>
   );
