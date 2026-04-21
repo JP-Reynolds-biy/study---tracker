@@ -369,6 +369,7 @@ export default function StudyTracker() {
 
   const logSubtopicSession = (subjectId, topicId, subtopicId, minutes, newKnowledge) => {
     const now = new Date().toISOString();
+    const sessionId = `s_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const today = new Date().toDateString();
     setState(prev => {
       const subject = prev.subjects.find(s => s.id === subjectId);
@@ -390,7 +391,7 @@ export default function StudyTracker() {
         ...prev,
         xp: prev.xp + earnedXP,
         streak: newStreak,
-        sessions: [...prev.sessions, { id: `s_${Date.now()}`, subjectId, topicId, subtopicId, date: now, minutes, xpEarned: earnedXP, advancedReview }],
+        sessions: [...prev.sessions, { id: sessionId, subjectId, topicId, subtopicId, date: now, minutes, xpEarned: earnedXP, advancedReview }],
         subjects: prev.subjects.map(s =>
           s.id === subjectId ? {
             ...s,
@@ -686,12 +687,19 @@ export default function StudyTracker() {
           const subj = state.subjects.find(s => s.id === activeTopic.subjectId);
           const topic = subj.topics.find(t => t.id === activeTopic.topicId);
           const subtopic = activeSubtopic ? (topic.subtopics || []).find(st => st.id === activeSubtopic) : null;
+          const groupSubtopics = !subtopic && (topic.subtopics || []).length > 0 ? topic.subtopics : null;
           return (
             <LogStudyModal
               topic={subtopic || topic}
               subject={subj}
-              onLog={(minutes, knowledge) => {
-                if (subtopic) {
+              subtopics={groupSubtopics}
+              onLog={(minutes, knowledge, selectedSubtopicIds) => {
+                if (selectedSubtopicIds) {
+                  const minutesEach = Math.max(1, Math.round(minutes / selectedSubtopicIds.length));
+                  selectedSubtopicIds.forEach(stid =>
+                    logSubtopicSession(activeTopic.subjectId, activeTopic.topicId, stid, minutesEach, knowledge)
+                  );
+                } else if (subtopic) {
                   logSubtopicSession(activeTopic.subjectId, activeTopic.topicId, activeSubtopic, minutes, knowledge);
                 } else {
                   logStudySession(activeTopic.subjectId, activeTopic.topicId, minutes, knowledge);
@@ -1329,11 +1337,32 @@ function AddTopicModal({ subject, onAdd, onClose }) {
   );
 }
 
-function LogStudyModal({ topic, subject, onLog, onClose }) {
+function LogStudyModal({ topic, subject, onLog, onClose, subtopics }) {
   const [minutes, setMinutes] = useState(30);
   const [knowledge, setKnowledge] = useState(topic.knowledge);
+  const [selectedIds, setSelectedIds] = useState(() =>
+    subtopics ? subtopics.map(st => st.id) : null
+  );
 
-  const xpPreview = Math.floor(minutes / 15) * 10 + Math.max(0, knowledge - topic.knowledge) * 25 + 5;
+  const isGroupMode = !!subtopics;
+
+  const minutesEach = selectedIds && selectedIds.length > 0 ? Math.max(1, Math.round(minutes / selectedIds.length)) : minutes;
+  const xpPreview = isGroupMode
+    ? (subtopics || [])
+        .filter(st => selectedIds.includes(st.id))
+        .reduce((sum, st) => sum + Math.floor(minutesEach / 15) * 10 + Math.max(0, knowledge - st.knowledge) * 25 + 5, 0)
+    : Math.floor(minutes / 15) * 10 + Math.max(0, knowledge - topic.knowledge) * 25 + 5;
+
+  const toggleId = (id) =>
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  const handleLog = () => {
+    if (isGroupMode) {
+      onLog(minutes, knowledge, selectedIds);
+    } else {
+      onLog(minutes, knowledge);
+    }
+  };
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -1341,6 +1370,30 @@ function LogStudyModal({ topic, subject, onLog, onClose }) {
         <div className="modal-glyph">{subject.glyph}</div>
         <h2>Log study session</h2>
         <p className="modal-topic">{topic.name}</p>
+
+        {isGroupMode && (
+          <div className="group-subtopic-picker">
+            <div className="group-subtopic-header">
+              <span className="form-label" style={{ margin: 0 }}>Which subtopics did you study?</span>
+              <div className="group-select-btns">
+                <button className="group-select-btn" onClick={() => setSelectedIds(subtopics.map(st => st.id))}>All</button>
+                <button className="group-select-btn" onClick={() => setSelectedIds([])}>None</button>
+              </div>
+            </div>
+            <div className="group-subtopic-list">
+              {subtopics.map(st => (
+                <label key={st.id} className={`group-subtopic-item ${selectedIds.includes(st.id) ? 'checked' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.includes(st.id)}
+                    onChange={() => toggleId(st.id)}
+                  />
+                  <span>{st.name}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
 
         <label className="form-label">How long did you study?</label>
         <div className="time-picker">
@@ -1382,11 +1435,20 @@ function LogStudyModal({ topic, subject, onLog, onClose }) {
         <div className="xp-preview">
           <span className="xp-glyph">𓋹</span>
           You'll earn <strong>+{xpPreview} XP</strong>
+          {isGroupMode && selectedIds.length > 1 && (
+            <span className="xp-group-note"> ({minutesEach}min each across {selectedIds.length} subtopics)</span>
+          )}
         </div>
 
         <div className="modal-actions">
           <button className="btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn-primary" onClick={() => onLog(minutes, knowledge)}>Log it</button>
+          <button
+            className="btn-primary"
+            onClick={handleLog}
+            disabled={isGroupMode && selectedIds.length === 0}
+          >
+            Log it
+          </button>
         </div>
       </div>
     </div>
@@ -2360,6 +2422,85 @@ const styles = `
     color: var(--gold-dark);
     font-family: var(--display);
     font-size: 1.1rem;
+  }
+
+  .xp-group-note {
+    font-size: 0.8rem;
+    color: var(--ink-soft);
+    font-family: var(--sans);
+  }
+
+  .group-subtopic-picker {
+    margin-bottom: 1.25rem;
+    border: 1px solid var(--gold-dark);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .group-subtopic-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 0.75rem;
+    background: rgba(201, 169, 97, 0.12);
+    border-bottom: 1px solid var(--gold-dark);
+  }
+
+  .group-select-btns {
+    display: flex;
+    gap: 0.4rem;
+  }
+
+  .group-select-btn {
+    background: none;
+    border: 1px solid var(--gold-dark);
+    border-radius: 2px;
+    padding: 0.15rem 0.5rem;
+    font-family: var(--sans);
+    font-size: 0.7rem;
+    color: var(--ink-soft);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .group-select-btn:hover {
+    background: rgba(201, 169, 97, 0.2);
+    color: var(--ink);
+  }
+
+  .group-subtopic-list {
+    max-height: 180px;
+    overflow-y: auto;
+    padding: 0.25rem 0;
+  }
+
+  .group-subtopic-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.45rem 0.75rem;
+    cursor: pointer;
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    color: var(--ink-soft);
+    transition: background 0.1s;
+  }
+
+  .group-subtopic-item:hover {
+    background: rgba(201, 169, 97, 0.1);
+  }
+
+  .group-subtopic-item.checked {
+    color: var(--ink);
+    font-weight: 500;
+  }
+
+  .group-subtopic-item input[type="checkbox"] {
+    accent-color: var(--subject-color, var(--gold-dark));
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    cursor: pointer;
   }
 
   .derived-knowledge {
