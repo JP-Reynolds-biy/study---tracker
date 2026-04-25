@@ -414,7 +414,19 @@ export default function StudyTracker() {
         }
       }
 
-      if (data) setState(data);
+      if (data) {
+        // Migrate existing accounts: inject default Business topics if none exist yet
+        const hasBizTopics = data.subjects?.find(s => s.id === 'business')?.topics?.length > 0;
+        if (!hasBizTopics) {
+          data = {
+            ...data,
+            subjects: data.subjects.map(s =>
+              s.id === 'business' ? { ...s, topics: DEFAULT_BUSINESS_TOPICS } : s
+            ),
+          };
+        }
+        setState(data);
+      }
       setLoading(false);
     })();
   }, [user, authLoading]);
