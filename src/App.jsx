@@ -216,7 +216,9 @@ function getNextReviewDate(lastStudied, reviewCount) {
 }
 
 function getEffectiveKnowledge(topic) {
-  return topic.knowledge;
+  const subs = topic.subtopics || [];
+  if (subs.length === 0) return topic.knowledge;
+  return Math.max(1, Math.round(subs.reduce((a, st) => a + st.knowledge, 0) / subs.length));
 }
 
 function getEffectiveMinutes(topic) {
@@ -1254,25 +1256,33 @@ function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onL
                   <div className="topic-details">
                     <div className="detail-row">
                       <label>Knowledge Level</label>
-                      <>
-                        <div className="knowledge-picker">
-                          {[1, 2, 3, 4, 5].map(n => (
-                            <button
-                              key={n}
-                              className={`k-btn ${topic.knowledge === n ? 'active' : ''}`}
-                              onClick={() => {
-                                onUpdateTopic(topic.id, { knowledge: n });
-                                (topic.subtopics || []).forEach(st => onUpdateSubtopic(topic.id, st.id, { knowledge: n }));
-                              }}
-                            >
-                              {n}
-                            </button>
-                          ))}
-                        </div>
-                        <div className="k-label">
-                          {['Clueless', 'Shaky', 'Getting there', 'Confident', 'Mastered'][topic.knowledge - 1]}
-                        </div>
-                      </>
+                      {(() => {
+                        const effK = getEffectiveKnowledge(topic);
+                        const hasSubs = (topic.subtopics || []).length > 0;
+                        return <>
+                          <div className="knowledge-picker">
+                            {[1, 2, 3, 4, 5].map(n => (
+                              <button
+                                key={n}
+                                className={`k-btn ${effK === n ? 'active' : ''}`}
+                                onClick={() => {
+                                  if (hasSubs) {
+                                    topic.subtopics.forEach(st => onUpdateSubtopic(topic.id, st.id, { knowledge: n }));
+                                  } else {
+                                    onUpdateTopic(topic.id, { knowledge: n });
+                                  }
+                                }}
+                              >
+                                {n}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="k-label">
+                            {['Clueless', 'Shaky', 'Getting there', 'Confident', 'Mastered'][effK - 1]}
+                            {hasSubs && <span style={{opacity: 0.55, marginLeft: '0.5em', fontSize: '0.85em'}}>— averaged from subtopics</span>}
+                          </div>
+                        </>;
+                      })()}
                     </div>
 
                     <div className="detail-row">
