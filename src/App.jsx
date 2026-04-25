@@ -21,6 +21,134 @@ const DEFAULT_SUBJECTS = [
   { id: 'english', name: 'English', glyph: '𓂋', color: '#7d6b8a' },
 ];
 
+function makeSt(id, name) {
+  return { id, name, knowledge: 1, notes: '', quizletUrl: '', examLinks: '', examPdfs: [], lastStudied: null, reviewCount: 0, totalMinutes: 0 };
+}
+function makeCh(id, name, subtopics) {
+  return { id, name, knowledge: 1, notes: '', quizletUrl: '', examLinks: '', examPdfs: [], lastStudied: null, reviewCount: 0, totalMinutes: 0, subtopics };
+}
+
+const DEFAULT_BUSINESS_TOPICS = [
+  makeCh('biz_ch1', 'Chapter 1 - My Personal Resources', [
+    makeSt('biz_ch1_st1', 'Individual and Household Resources'),
+    makeSt('biz_ch1_st2', 'Making Choices: Our Needs and Wants'),
+    makeSt('biz_ch1_st3', 'The Impact Our Choices Have on Others'),
+  ]),
+  makeCh('biz_ch2', 'Chapter 2 - My Personal Financial Lifecycle', [
+    makeSt('biz_ch2_st1', 'Stages in your Financial Lifecycle'),
+    makeSt('biz_ch2_st2', 'Planning for your Financial Needs'),
+  ]),
+  makeCh('biz_ch3', 'Chapter 3 - Household Income and Expenditure', [
+    makeSt('biz_ch3_st1', 'Sources of Household Income'),
+    makeSt('biz_ch3_st2', 'Managing your Household Income'),
+    makeSt('biz_ch3_st3', 'Household Expenditure'),
+    makeSt('biz_ch3_st4', 'Managing your Household Expenditure'),
+  ]),
+  makeCh('biz_ch4', 'Chapter 4 - Household Budgeting', [
+    makeSt('biz_ch4_st1', 'The Household Budget'),
+  ]),
+  makeCh('biz_ch5', 'Chapter 5 - Budgeting for Change', [
+    makeSt('biz_ch5_st1', 'Budgeting for Change'),
+  ]),
+  makeCh('biz_ch6', 'Chapter 6 - Recording Household Income and Expenditure', [
+    makeSt('biz_ch6_st1', 'The Analysed Cash Book'),
+    makeSt('biz_ch6_st2', 'Budget Comparison Statement'),
+    makeSt('biz_ch6_st3', 'Household Bills'),
+    makeSt('biz_ch6_st4', 'Making and Receiving Payments'),
+    makeSt('biz_ch6_st5', 'Current Accounts'),
+  ]),
+  makeCh('biz_ch7', 'Chapter 7 - Saving Your Money', [
+    makeSt('biz_ch7_st1', 'Saving Your Money'),
+    makeSt('biz_ch7_st2', 'Interest on Savings'),
+    makeSt('biz_ch7_st3', 'Investing'),
+  ]),
+  makeCh('biz_ch8', 'Chapter 8 - Borrowing Money', [
+    makeSt('biz_ch8_st1', 'Reasons for Borrowing'),
+    makeSt('biz_ch8_st2', 'Types of Borrowing'),
+    makeSt('biz_ch8_st3', 'Interest on Borrowing'),
+    makeSt('biz_ch8_st4', 'Rights and Responsibilities When Borrowing'),
+    makeSt('biz_ch8_st5', 'Applying for a Loan'),
+  ]),
+  makeCh('biz_ch9', 'Chapter 9 - Personal Taxation', [
+    makeSt('biz_ch9_st1', 'What is Taxation?'),
+    makeSt('biz_ch9_st2', 'Types of Taxes and Charges'),
+  ]),
+  makeCh('biz_ch10', 'Chapter 10 - Wages and Salaries', [
+    makeSt('biz_ch10_st1', 'Calculating Pay'),
+    makeSt('biz_ch10_st2', 'The Payslip (Wage Slip)'),
+    makeSt('biz_ch10_st3', 'Calculating Income Tax'),
+  ]),
+  makeCh('biz_ch11', 'Chapter 11 - Personal and Household Insurance', [
+    makeSt('biz_ch11_st1', 'Risk and Insurance'),
+    makeSt('biz_ch11_st2', 'Types of Personal and Household Insurance'),
+    makeSt('biz_ch11_st3', 'Taking out Insurance'),
+    makeSt('biz_ch11_st4', 'The Rules (Principles) of Insurance'),
+  ]),
+  makeCh('biz_ch12', 'Chapter 12 - Personal Insurance Costs and Claims', [
+    makeSt('biz_ch12_st1', 'The Cost of Insurance'),
+    makeSt('biz_ch12_st2', 'Making a Claim'),
+    makeSt('biz_ch12_st3', 'Calculating Compensation'),
+  ]),
+  makeCh('biz_ch13', 'Chapter 13 - Consumer Rights and Responsibilities', [
+    makeSt('biz_ch13_st1', 'Consumers and Brands'),
+    makeSt('biz_ch13_st2', 'Rights and Responsibilities'),
+    makeSt('biz_ch13_st3', 'Solutions and Remedies (Redress)'),
+  ]),
+  makeCh('biz_ch14', 'Chapter 14 - Supporting the Consumer', [
+    makeSt('biz_ch14_st1', 'Consumer Organisations and Agencies'),
+    makeSt('biz_ch14_st2', 'The Online Consumer'),
+  ]),
+  makeCh('biz_ch15', 'Chapter 15 - Sustainable Development and Consumption', [
+    makeSt('biz_ch15_st1', 'Sustainable Development and Sustainable Consumption'),
+    makeSt('biz_ch15_st2', 'Ethical Consumption'),
+    makeSt('biz_ch15_st3', 'The Government and Global Response'),
+    makeSt('biz_ch15_st4', 'The Socially Responsible Business'),
+  ]),
+  makeCh('biz_ch16', 'Chapter 16 - Globalisation and Technology', [
+    makeSt('biz_ch16_st1', 'Globalisation'),
+    makeSt('biz_ch16_st2', 'Technology'),
+  ]),
+  makeCh('biz_ch17', 'Chapter 17 - Types of Enterprise', [
+    makeSt('biz_ch17_st1', 'Financial, Social and Cultural Enterprise'),
+    makeSt('biz_ch17_st2', 'Types of Business Ownership'),
+  ]),
+  makeCh('biz_ch18', 'Chapter 18 - Entrepreneurs and Enterprising People', [
+    makeSt('biz_ch18_st1', 'Being Enterprising'),
+    makeSt('biz_ch18_st2', 'Skills and Characteristics of Enterprising People'),
+    makeSt('biz_ch18_st3', 'The Entrepreneur'),
+  ]),
+  makeCh('biz_ch19', 'Chapter 19 - Work, Employment and Volunteerism', [
+    makeSt('biz_ch19_st1', 'Work and Employment'),
+    makeSt('biz_ch19_st2', 'Volunteerism'),
+    makeSt('biz_ch19_st3', 'The Labour Force'),
+  ]),
+  makeCh('biz_ch20', 'Chapter 20 - Employers and Employees', [
+    makeSt('biz_ch20_st1', 'Employers and Employees'),
+    makeSt('biz_ch20_st2', 'Employing Staff'),
+    makeSt('biz_ch20_st3', 'Industrial Relations'),
+    makeSt('biz_ch20_st4', 'Employment and the Law'),
+  ]),
+  makeCh('biz_ch21', 'Chapter 21 - Digital Technologies', [
+    makeSt('biz_ch21_st1', 'Digital Technologies'),
+    makeSt('biz_ch21_st2', 'Technology Terms'),
+    makeSt('biz_ch21_st3', 'Rewards and Costs of Technology'),
+  ]),
+  makeCh('biz_ch22', 'Chapter 22 - Impacting the Community', [
+    makeSt('biz_ch22_st1', 'Positive Impacts of Organisations'),
+    makeSt('biz_ch22_st2', 'Negative Impacts of Organisations'),
+  ]),
+  makeCh('biz_ch23', 'Chapter 23 - Marketing and Market Research', [
+    makeSt('biz_ch23_st1', 'Markets and Marketing'),
+    makeSt('biz_ch23_st2', 'Market Research'),
+    makeSt('biz_ch23_st3', 'Doing the Research'),
+  ]),
+  makeCh('biz_ch24', 'Chapter 24 - The Marketing Mix', [
+    makeSt('biz_ch24_st1', 'The Marketing Mix'),
+    makeSt('biz_ch24_st2', 'Advertising, Sales, Promotion and Sponsorship'),
+    makeSt('biz_ch24_st3', 'Developing a New Product'),
+  ]),
+];
+
 // ============ STORAGE HELPERS ============
 
 // localStorage — used as an offline fallback and for migration detection
@@ -222,7 +350,7 @@ function ExamPdfs({ pdfs = [], onChange, userId }) {
 // ============ MAIN APP ============
 export default function StudyTracker() {
   const [state, setState] = useState({
-    subjects: DEFAULT_SUBJECTS.map(s => ({ ...s, topics: [] })),
+    subjects: DEFAULT_SUBJECTS.map(s => ({ ...s, topics: s.id === 'business' ? DEFAULT_BUSINESS_TOPICS : [] })),
     sessions: [],
     xp: 0,
     streak: { count: 0, lastDay: null },
