@@ -1260,7 +1260,10 @@ function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onL
                             <button
                               key={n}
                               className={`k-btn ${topic.knowledge === n ? 'active' : ''}`}
-                              onClick={() => onUpdateTopic(topic.id, { knowledge: n })}
+                              onClick={() => {
+                                onUpdateTopic(topic.id, { knowledge: n });
+                                (topic.subtopics || []).forEach(st => onUpdateSubtopic(topic.id, st.id, { knowledge: n }));
+                              }}
                             >
                               {n}
                             </button>
@@ -1268,10 +1271,6 @@ function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onL
                         </div>
                         <div className="k-label">
                           {['Clueless', 'Shaky', 'Getting there', 'Confident', 'Mastered'][topic.knowledge - 1]}
-                          {(topic.subtopics || []).length > 0 && (() => {
-                            const avg = Math.max(1, Math.round(topic.subtopics.reduce((a, st) => a + st.knowledge, 0) / topic.subtopics.length));
-                            return <span style={{opacity: 0.55, marginLeft: '0.5em', fontSize: '0.85em'}}>· subtopic avg: {avg}</span>;
-                          })()}
                         </div>
                       </>
                     </div>
