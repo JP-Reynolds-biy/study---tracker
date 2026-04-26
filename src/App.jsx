@@ -10,6 +10,19 @@ function getReviewInterval(reviewCount) {
   return 30;
 }
 
+function getLevelInfo(totalXP) {
+  let level = 1;
+  let accumulated = 0;
+  while (true) {
+    const needed = level * 200;
+    if (accumulated + needed > totalXP) {
+      return { level, xpInLevel: totalXP - accumulated, xpNeeded: needed };
+    }
+    accumulated += needed;
+    level++;
+  }
+}
+
 const DEFAULT_SUBJECTS = [
   { id: 'maths', name: 'Maths', glyph: '𓎟', color: '#c9a961' },
   { id: 'history', name: 'History', glyph: '𓂀', color: '#b85c38' },
@@ -598,7 +611,7 @@ export default function StudyTracker() {
         newStreak = { count: lastDay === yesterday.toDateString() ? prev.streak.count + 1 : 1, lastDay: today };
       }
       const nextDue = subtopic.lastStudied ? getNextReviewDate(subtopic.lastStudied, subtopic.reviewCount || 0) : null;
-      const advancedReview = !subtopic.lastStudied || !nextDue || new Date() >= new Date(nextDue);
+      const advancedReview = !subtopic.lastStudied || !nextDue || daysBetween(new Date(), nextDue) <= 0;
       return {
         ...prev,
         xp: prev.xp + earnedXP,
@@ -648,7 +661,7 @@ export default function StudyTracker() {
       }
 
       const nextDue = topic.lastStudied ? getNextReviewDate(topic.lastStudied, topic.reviewCount || 0) : null;
-      const advancedReview = !topic.lastStudied || !nextDue || new Date() >= new Date(nextDue);
+      const advancedReview = !topic.lastStudied || !nextDue || daysBetween(new Date(), nextDue) <= 0;
 
       return {
         ...prev,
@@ -757,8 +770,7 @@ export default function StudyTracker() {
     [reviewQueue]
   );
 
-  const level = Math.floor(state.xp / 100) + 1;
-  const xpInLevel = state.xp % 100;
+  const { level, xpInLevel, xpNeeded } = getLevelInfo(state.xp);
 
   useEffect(() => {
     if (loading) return;
@@ -803,7 +815,7 @@ export default function StudyTracker() {
           </div>
           <div className="stats">
             <StatBadge label="Level" value={level} glyph="𓇳" />
-            <StatBadge label="XP" value={`${xpInLevel}/100`} glyph="𓋹" />
+            <StatBadge label="XP" value={`${xpInLevel}/${xpNeeded}`} glyph="𓋹" />
             <StatBadge label="Streak" value={`${state.streak.count}d`} glyph="𓍱" />
             <StatBadge label="Due" value={urgentCount} glyph="𓂀" urgent={urgentCount > 0} />
             {!isDemoMode && <button
