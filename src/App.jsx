@@ -1268,7 +1268,7 @@ function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onL
             const review = getEffectiveReviewStatus(topic);
             const isExpanded = expandedTopic === topic.id;
             return (
-              <div key={topic.id} className={`topic-card reveal ${isExpanded ? 'expanded' : ''}`}>
+              <div key={topic.id} className={`topic-card ${isExpanded ? 'expanded' : ''}`}>
                 <div className="topic-header" onClick={() => setExpandedTopic(isExpanded ? null : topic.id)}>
                   <div className="topic-main">
                     <div className="topic-name-row">
@@ -1666,7 +1666,7 @@ function ReviewView({ dueTopics, onStudy }) {
   const upcoming = dueTopics.filter(i => i.review.status === 'soon' || i.review.status === 'scheduled');
 
   const renderCard = ({ subject, topic, subtopic, review }) => (
-    <div key={subtopic ? subtopic.id : topic.id} className={`review-card reveal ${topic.priority ? 'priority' : ''}`} style={{ '--subject-color': subject.color }}>
+    <div key={subtopic ? subtopic.id : topic.id} className={`review-card ${topic.priority ? 'priority' : ''}`} style={{ '--subject-color': subject.color }}>
       <div className="review-card-left">
         <span className="review-glyph">{subject.glyph}</span>
         <div>
@@ -1790,19 +1790,19 @@ function StatsView({ state, onImport }) {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card reveal">
+        <div className="stat-card">
           <div className="stat-big">{totalMinutes}</div>
           <div className="stat-desc">Total minutes</div>
         </div>
-        <div className="stat-card reveal" style={{ '--reveal-delay': '80ms' }}>
+        <div className="stat-card">
           <div className="stat-big">{totalSessions}</div>
           <div className="stat-desc">Sessions logged</div>
         </div>
-        <div className="stat-card reveal" style={{ '--reveal-delay': '160ms' }}>
+        <div className="stat-card">
           <div className="stat-big">{state.xp}</div>
           <div className="stat-desc">Total XP earned</div>
         </div>
-        <div className="stat-card reveal" style={{ '--reveal-delay': '240ms' }}>
+        <div className="stat-card">
           <div className="stat-big">{state.streak.count}</div>
           <div className="stat-desc">Day streak</div>
         </div>
@@ -2723,6 +2723,14 @@ const styles = `
 
   .review-list { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1.5rem; }
 
+  .review-list .review-card {
+    animation: fadeUp 0.45s cubic-bezier(0.2,0,0,1) both;
+  }
+  .review-list .review-card:nth-child(2) { animation-delay: 50ms; }
+  .review-list .review-card:nth-child(3) { animation-delay: 100ms; }
+  .review-list .review-card:nth-child(4) { animation-delay: 150ms; }
+  .review-list .review-card:nth-child(n+5) { animation-delay: 180ms; }
+
   .review-section-label {
     font-family: var(--sans);
     font-size: 0.7rem;
@@ -2821,6 +2829,11 @@ const styles = `
     gap: 1rem;
     margin-bottom: 2rem;
   }
+
+  .stats-grid .stat-card { animation: fadeUp 0.45s cubic-bezier(0.2,0,0,1) both; }
+  .stats-grid .stat-card:nth-child(2) { animation-delay: 60ms; }
+  .stats-grid .stat-card:nth-child(3) { animation-delay: 120ms; }
+  .stats-grid .stat-card:nth-child(4) { animation-delay: 180ms; }
 
   .stat-card {
     background: rgba(255, 248, 235, 0.3);
