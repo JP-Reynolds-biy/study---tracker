@@ -224,6 +224,7 @@ function formatDate(iso) {
 function getNextReviewDate(lastStudied, reviewCount) {
   if (!lastStudied) return null;
   const date = new Date(lastStudied);
+  date.setHours(0, 0, 0, 0);
   date.setDate(date.getDate() + getReviewInterval(reviewCount));
   return date.toISOString();
 }
