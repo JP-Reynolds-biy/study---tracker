@@ -887,6 +887,12 @@ export default function StudyTracker() {
           <button className={`nav-btn ${view === 'review' ? 'active' : ''}`} onClick={() => setView('review')}>
             Review Queue {urgentCount > 0 && <span className="badge">{urgentCount}</span>}
           </button>
+          <button className={`nav-btn ${view === 'calendar' ? 'active' : ''}`} onClick={() => setView('calendar')}>
+            Calendar
+          </button>
+          <button className={`nav-btn ${view === 'knowledge' ? 'active' : ''}`} onClick={() => setView('knowledge')}>
+            Knowledge
+          </button>
           <button className={`nav-btn ${view === 'stats' ? 'active' : ''}`} onClick={() => setView('stats')}>
             Stats
           </button>
@@ -954,6 +960,23 @@ export default function StudyTracker() {
                 setShowLogModal(true);
               }}
             />
+          )}
+
+          {view === 'calendar' && (
+            <CalendarView
+              state={state}
+              exams={state.exams || []}
+              onAddExam={addExam}
+              onStudy={(subjectId, topicId, subtopicId) => {
+                setActiveTopic({ subjectId, topicId });
+                setActiveSubtopic(subtopicId || null);
+                setShowLogModal(true);
+              }}
+            />
+          )}
+
+          {view === 'knowledge' && (
+            <KnowledgeView state={state} />
           )}
 
           {view === 'stats' && (
@@ -1704,6 +1727,591 @@ function ReviewView({ dueTopics, onStudy }) {
           <div className="review-section-label">{urgent.length > 0 ? 'Upcoming' : `Upcoming (${upcoming.length})`}</div>
           <div className="review-list">{upcoming.map(renderCard)}</div>
         </>
+      )}
+    </div>
+  );
+}
+
+function CalendarView({ state, exams, onStudy, onAddExam }) {
+  const [calMode, setCalMode] = useState('month');
+  const [anchor, setAnchor] = useState(() => { const d = new Date(); d.setHours(0,0,0,0); return d; });
+  const [selectedDate, setSelectedDate] = useState(null);
+  const [showAddExam, setShowAddExam] = useState(false);
+  const [addExamName, setAddExamName] = useState('');
+  const [addExamDate, setAddExamDate] = useState('');
+
+  const todayStr = new Date().toISOString().split('T')[0];
+
+  const dayMap = useMemo(() => {
+    const map = {};
+    const add = (key, cat, item) => {
+      if (!map[key]) map[key] = { reviews: [], exams: [], sessionMins: 0 };
+      if (cat === 'mins') map[key].sessionMins += item;
+      else map[key][cat].push(item);
+    };
+    state.subjects.forEach(subj => {
+      subj.topics.forEach(topic => {
+        if (topic.lastStudied) {
+          const nxt = getNextReviewDate(topic.lastStudied, topic.reviewCount || 0);
+          if (nxt) add(nxt.split('T')[0], 'reviews', { subject: subj, topic, subtopic: null });
+        }
+        (topic.subtopics || []).forEach(st => {
+          if (st.lastStudied) {
+            const nxt = getNextReviewDate(st.lastStudied, st.reviewCount || 0);
+            if (nxt) add(nxt.split('T')[0], 'reviews', { subject: subj, topic, subtopic: st });
+          }
+        });
+      });
+    });
+    (exams || []).forEach(exam => { if (exam.date) add(exam.date, 'exams', exam); });
+    // Subject-level and topic-level exam dates (set inside subject/chapter views)
+    state.subjects.forEach(subj => {
+      if (subj.examDate) add(subj.examDate, 'exams', { id: `subj_${subj.id}`, name: `${subj.name} Exam`, date: subj.examDate, glyph: subj.glyph, color: subj.color });
+      subj.topics.forEach(topic => {
+        if (topic.examDate) add(topic.examDate, 'exams', { id: `topic_${topic.id}`, name: `${topic.name}`, date: topic.examDate, subject: subj.name, glyph: subj.glyph, color: subj.color });
+      });
+    });
+    (state.sessions || []).forEach(sess => { if (sess.date) add(sess.date.split('T')[0], 'mins', sess.minutes || 0); });
+    return map;
+  }, [state, exams]);
+
+  const toDS = (d) => {
+    const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const navigate = (dir) => setAnchor(prev => {
+    const d = new Date(prev);
+    if (calMode === 'week') d.setDate(d.getDate() + dir * 7);
+    else if (calMode === 'month') d.setMonth(d.getMonth() + dir);
+    else d.setFullYear(d.getFullYear() + dir);
+    return d;
+  });
+
+  const goToday = () => { const d = new Date(); d.setHours(0,0,0,0); setAnchor(d); setSelectedDate(todayStr); };
+
+  const nextExam = useMemo(() => {
+    const today = new Date(); today.setHours(0,0,0,0);
+    const all = [
+      ...(exams || []),
+      ...state.subjects.map(s => s.examDate ? { id:`subj_${s.id}`, name:`${s.name} Exam`, date: s.examDate } : null).filter(Boolean),
+      ...state.subjects.flatMap(s => s.topics.map(t => t.examDate ? { id:`topic_${t.id}`, name: t.name, date: t.examDate } : null).filter(Boolean)),
+    ];
+    return all.filter(e => e.date && new Date(e.date + 'T00:00:00') >= today).sort((a,b) => new Date(a.date)-new Date(b.date))[0];
+  }, [exams, state.subjects]);
+
+  const headerLabel = useMemo(() => {
+    if (calMode === 'week') {
+      const mon = new Date(anchor);
+      mon.setDate(mon.getDate() - (mon.getDay() === 0 ? 6 : mon.getDay() - 1));
+      const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+      return `${mon.toLocaleDateString('en-IE',{day:'numeric',month:'short'})} – ${sun.toLocaleDateString('en-IE',{day:'numeric',month:'short',year:'numeric'})}`;
+    }
+    if (calMode === 'month') return anchor.toLocaleDateString('en-IE',{month:'long',year:'numeric'});
+    return String(anchor.getFullYear());
+  }, [anchor, calMode]);
+
+  const getMonthCells = (year, month) => {
+    const firstDay = new Date(year, month, 1);
+    const dow = firstDay.getDay();
+    const start = new Date(firstDay);
+    start.setDate(start.getDate() - (dow === 0 ? 6 : dow - 1));
+    const cells = [];
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(start); d.setDate(start.getDate() + i);
+      cells.push({ ds: toDS(d), inMonth: d.getMonth() === month });
+    }
+    while (cells.length > 35 && cells.slice(-7).every(c => !c.inMonth)) cells.splice(-7);
+    return cells;
+  };
+
+  const renderCell = (ds, { inMonth = true, mini = false, weekMode = false } = {}) => {
+    const data = dayMap[ds] || { reviews: [], exams: [], sessionMins: 0 };
+    const d = new Date(ds + 'T00:00:00');
+    const isToday = ds === todayStr;
+    const isPast = ds < todayStr;
+    const isSelected = ds === selectedDate;
+    const hasExam = data.exams.length > 0;
+    const hasReviews = data.reviews.length > 0;
+    const hasActivity = data.sessionMins > 0;
+
+    if (mini) {
+      return (
+        <div
+          key={ds}
+          className={['cal-mini-cell', isToday?'cal-today':'', isPast?'cal-past':'', !inMonth?'cal-out':'', hasExam?'cal-exam-day':'', isSelected?'cal-selected':''].join(' ')}
+          onClick={() => setSelectedDate(isSelected ? null : ds)}
+          title={ds}
+        >
+          {d.getDate()}
+          {(hasExam || hasReviews || hasActivity) && (
+            <div className="cal-mini-dots">
+              {hasExam && <span className="cal-dot cal-dot-exam" />}
+              {hasReviews && <span className="cal-dot cal-dot-review" />}
+              {hasActivity && <span className="cal-dot cal-dot-activity" />}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const maxPills = weekMode ? 5 : 2;
+    return (
+      <div
+        key={ds}
+        className={['cal-cell', isToday?'cal-today':'', isPast?'cal-past':'', !inMonth?'cal-out':'', hasExam?'cal-exam-day':'', isSelected?'cal-selected':''].join(' ')}
+        onClick={() => setSelectedDate(isSelected ? null : ds)}
+      >
+        <div className="cal-cell-num">{d.getDate()}</div>
+        {hasActivity && <div className="cal-activity-bar" style={{ width: `${Math.min(100,(data.sessionMins/120)*100)}%` }} />}
+        <div className="cal-cell-events">
+          {data.exams.map(e => <div key={e.id} className="cal-pill cal-pill-exam">{e.name}</div>)}
+          {data.reviews.slice(0, maxPills).map((r, i) => (
+            <div key={i} className="cal-pill cal-pill-review" style={{ '--sc': r.subject.color }}>
+              {r.subject.glyph} {r.subtopic ? r.subtopic.name : r.topic.name}
+            </div>
+          ))}
+          {data.reviews.length > maxPills && <div className="cal-pill-more">+{data.reviews.length - maxPills}</div>}
+        </div>
+      </div>
+    );
+  };
+
+  const DAY_LABELS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+  const renderWeekView = () => {
+    const mon = new Date(anchor);
+    mon.setDate(mon.getDate() - (mon.getDay() === 0 ? 6 : mon.getDay() - 1));
+    const days = Array.from({length:7}, (_,i) => { const d = new Date(mon); d.setDate(mon.getDate()+i); return toDS(d); });
+    return (
+      <div className="cal-week-grid">
+        {days.map((ds, i) => (
+          <div key={ds} className="cal-week-col">
+            <div className={`cal-week-col-label ${ds === todayStr ? 'cal-today-label' : ''}`}>
+              <span className="cal-week-day-name">{DAY_LABELS[i]}</span>
+              <span className="cal-week-day-num">{new Date(ds+'T00:00:00').getDate()}</span>
+            </div>
+            {renderCell(ds, { weekMode: true })}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const renderMonthView = () => {
+    const cells = getMonthCells(anchor.getFullYear(), anchor.getMonth());
+    return (
+      <div>
+        <div className="cal-day-labels">{DAY_LABELS.map(d => <div key={d} className="cal-day-label">{d}</div>)}</div>
+        <div className="cal-month-grid">{cells.map(({ ds, inMonth }) => renderCell(ds, { inMonth }))}</div>
+      </div>
+    );
+  };
+
+  const renderYearView = () => {
+    const year = anchor.getFullYear();
+    const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    return (
+      <div className="cal-year-grid">
+        {MONTHS.map((name, m) => {
+          const cells = getMonthCells(year, m);
+          return (
+            <div key={m} className="cal-year-month">
+              <div className="cal-year-month-name">{name}</div>
+              <div className="cal-year-day-labels">{DAY_LABELS.map(d => <div key={d} className="cal-year-day-label">{d[0]}</div>)}</div>
+              <div className="cal-year-month-grid">{cells.map(({ ds, inMonth }) => renderCell(ds, { inMonth, mini: true }))}</div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderDayDetail = () => {
+    if (!selectedDate) return null;
+    const data = dayMap[selectedDate] || { reviews: [], exams: [], sessionMins: 0 };
+    const dateLabel = new Date(selectedDate+'T00:00:00').toLocaleDateString('en-IE',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+    const isEmpty = data.reviews.length === 0 && data.exams.length === 0 && data.sessionMins === 0;
+
+    return (
+      <div className="cal-day-detail">
+        <div className="cal-detail-header">
+          <span className="cal-detail-date">{dateLabel}</span>
+          <button className="cal-detail-close" onClick={() => setSelectedDate(null)} aria-label="Close">✕</button>
+        </div>
+        {isEmpty && <p className="cal-detail-empty">Nothing scheduled for this day.</p>}
+        {data.exams.length > 0 && (
+          <div className="cal-detail-section">
+            <div className="cal-detail-section-title">Exams & Tests</div>
+            {data.exams.map(e => {
+              const days = getDaysUntilExam(e.date);
+              return (
+                <div key={e.id} className="cal-detail-exam">
+                  <span className="cal-detail-exam-glyph">𓋹</span>
+                  <div>
+                    <div className="cal-detail-exam-name">{e.name}</div>
+                    <div className="cal-detail-exam-countdown">
+                      {days === 0 ? 'Today!' : days > 0 ? `In ${days} day${days!==1?'s':''}` : `${Math.abs(days)} day${Math.abs(days)!==1?'s':''} ago`}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {data.reviews.length > 0 && (
+          <div className="cal-detail-section">
+            <div className="cal-detail-section-title">Reviews Due ({data.reviews.length})</div>
+            <div className="cal-detail-review-list">
+              {data.reviews.map((r, i) => (
+                <div key={i} className="cal-detail-review" style={{ '--sc': r.subject.color }}>
+                  <span className="cal-detail-review-glyph" style={{ color: r.subject.color }}>{r.subject.glyph}</span>
+                  <div className="cal-detail-review-info">
+                    <div className="cal-detail-review-subject">{r.subject.name}</div>
+                    <div className="cal-detail-review-topic">
+                      {r.subtopic ? `${r.topic.name} › ${r.subtopic.name}` : r.topic.name}
+                    </div>
+                  </div>
+                  {selectedDate <= todayStr && (
+                    <button className="log-btn cal-study-btn" onClick={() => { onStudy(r.subject.id, r.topic.id, r.subtopic?.id); setSelectedDate(null); }}>
+                      Study
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {data.sessionMins > 0 && (
+          <div className="cal-detail-section">
+            <div className="cal-detail-section-title">Study Logged</div>
+            <div className="cal-detail-mins">𓇳 {data.sessionMins} minute{data.sessionMins!==1?'s':''} studied</div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="cal-view">
+      {nextExam && (
+        <div className="cal-exam-banner">
+          <span className="cal-exam-banner-icon">𓋹</span>
+          <span className="cal-exam-banner-text">
+            <strong>{nextExam.name}</strong>
+            {' — '}
+            {getDaysUntilExam(nextExam.date) === 0
+              ? 'Today!'
+              : getDaysUntilExam(nextExam.date) > 0
+              ? `${getDaysUntilExam(nextExam.date)} day${getDaysUntilExam(nextExam.date)!==1?'s':''} away`
+              : 'Past'}
+          </span>
+          <span className="cal-exam-banner-date">{new Date(nextExam.date+'T00:00:00').toLocaleDateString('en-IE',{day:'numeric',month:'short',year:'numeric'})}</span>
+        </div>
+      )}
+
+      <div className="cal-toolbar">
+        <div className="cal-mode-btns">
+          {['week','month','year'].map(m => (
+            <button key={m} className={`cal-mode-btn ${calMode===m?'active':''}`} onClick={() => setCalMode(m)}>
+              {m.charAt(0).toUpperCase()+m.slice(1)}
+            </button>
+          ))}
+        </div>
+        <div className="cal-nav">
+          <button className="cal-nav-btn" onClick={() => navigate(-1)} aria-label="Previous">‹</button>
+          <button className="cal-today-btn" onClick={goToday}>Today</button>
+          <span className="cal-nav-label">{headerLabel}</span>
+          <button className="cal-nav-btn" onClick={() => navigate(1)} aria-label="Next">›</button>
+        </div>
+        <button className="cal-add-exam-btn" onClick={() => { setShowAddExam(p => !p); setAddExamName(''); setAddExamDate(''); }}>
+          + Add Test
+        </button>
+      </div>
+
+      {showAddExam && (
+        <div className="cal-add-exam-form">
+          <input
+            className="cal-add-exam-input"
+            placeholder="Test / exam name…"
+            value={addExamName}
+            onChange={e => setAddExamName(e.target.value)}
+            autoFocus
+          />
+          <input
+            className="cal-add-exam-input"
+            type="date"
+            value={addExamDate}
+            onChange={e => setAddExamDate(e.target.value)}
+          />
+          <button
+            className="cal-add-exam-submit"
+            disabled={!addExamName.trim() || !addExamDate}
+            onClick={() => { onAddExam(addExamName.trim(), addExamDate); setShowAddExam(false); setAddExamName(''); setAddExamDate(''); }}
+          >
+            Save
+          </button>
+          <button className="cal-add-exam-cancel" onClick={() => setShowAddExam(false)}>Cancel</button>
+        </div>
+      )}
+
+      <div className="cal-body">
+        {calMode === 'week' && renderWeekView()}
+        {calMode === 'month' && renderMonthView()}
+        {calMode === 'year' && renderYearView()}
+      </div>
+
+      {renderDayDetail()}
+    </div>
+  );
+}
+
+function KnowledgeView({ state }) {
+  const [expandedSubject, setExpandedSubject] = useState(null);
+  const [expandedTopic, setExpandedTopic] = useState(null);
+
+  const kColor = (k) => {
+    if (!k || k < 1) return 'rgba(92,74,53,0.3)';
+    if (k < 2) return '#b85c38';
+    if (k < 3) return '#c9883c';
+    if (k < 4) return '#c9a961';
+    return '#4a7c59';
+  };
+  const kLabel = (k) => {
+    if (!k) return 'Not started';
+    if (k < 1.5) return 'Weak';
+    if (k < 2.5) return 'Developing';
+    if (k < 3.5) return 'Competent';
+    if (k < 4.5) return 'Strong';
+    return 'Mastered';
+  };
+  const kPct = (k) => (k && k >= 1) ? Math.max(4, ((k - 1) / 4) * 100) : 0;
+
+  const subjectSummaries = useMemo(() => {
+    return state.subjects.map(subj => {
+      const kVals = [];
+      subj.topics.forEach(t => {
+        const subs = t.subtopics || [];
+        if (subs.length === 0) { if (t.lastStudied) kVals.push(t.knowledge || 1); }
+        else subs.forEach(st => { if (st.lastStudied) kVals.push(st.knowledge || 1); });
+      });
+      const avg = kVals.length ? kVals.reduce((a, v) => a + v, 0) / kVals.length : null;
+      const totalItems = subj.topics.reduce((a, t) => a + ((t.subtopics || []).length || 1), 0);
+      const studiedItems = subj.topics.reduce((a, t) => {
+        const subs = t.subtopics || [];
+        return a + (subs.length === 0 ? (t.lastStudied ? 1 : 0) : subs.filter(st => st.lastStudied).length);
+      }, 0);
+      return { subject: subj, avg, studiedItems, totalItems };
+    }).sort((a, b) => (b.avg || 0) - (a.avg || 0));
+  }, [state.subjects]);
+
+  const getTopicRows = (subj) => subj.topics.map(t => {
+    const subs = t.subtopics || [];
+    const studiedSubs = subs.filter(st => st.lastStudied);
+    const effectiveK = subs.length === 0
+      ? (t.lastStudied ? (t.knowledge || 1) : null)
+      : (studiedSubs.length ? studiedSubs.reduce((a, st) => a + (st.knowledge || 1), 0) / studiedSubs.length : null);
+    return { topic: t, effectiveK, studiedCount: subs.length === 0 ? (t.lastStudied ? 1 : 0) : studiedSubs.length, totalCount: subs.length || 1 };
+  }).sort((a, b) => (b.effectiveK || 0) - (a.effectiveK || 0));
+
+  const unstudiedTopics = useMemo(() => {
+    const out = [];
+    state.subjects.forEach(subj => subj.topics.forEach(t => {
+      const subs = t.subtopics || [];
+      const anyStudied = subs.length === 0 ? !!t.lastStudied : subs.some(st => st.lastStudied);
+      if (!anyStudied) out.push({ topic: t, subject: subj });
+    }));
+    return out;
+  }, [state.subjects]);
+
+  const unstudiedSubtopics = useMemo(() => {
+    const out = [];
+    state.subjects.forEach(subj => subj.topics.forEach(t =>
+      (t.subtopics || []).forEach(st => {
+        if (!st.lastStudied) out.push({ subtopic: st, topic: t, subject: subj });
+      })
+    ));
+    return out;
+  }, [state.subjects]);
+
+  // Overall summary stats
+  const overallStats = useMemo(() => {
+    const all = subjectSummaries.filter(s => s.avg !== null);
+    const overallAvg = all.length ? all.reduce((a, s) => a + s.avg, 0) / all.length : null;
+    const totalStudied = subjectSummaries.reduce((a, s) => a + s.studiedItems, 0);
+    const totalItems = subjectSummaries.reduce((a, s) => a + s.totalItems, 0);
+    const best = all[0] || null;
+    const worst = all.length > 1 ? all[all.length - 1] : null;
+    return { overallAvg, totalStudied, totalItems, best, worst };
+  }, [subjectSummaries]);
+
+  const toggleSubject = (id) => { setExpandedSubject(p => p === id ? null : id); setExpandedTopic(null); };
+  const toggleTopic = (key) => setExpandedTopic(p => p === key ? null : key);
+
+  return (
+    <div className="kv-view">
+
+      {/* Overview bar */}
+      <div className="kv-overview">
+        <div className="kv-ov-card">
+          <div className="kv-ov-value" style={{ color: kColor(overallStats.overallAvg) }}>
+            {overallStats.overallAvg ? overallStats.overallAvg.toFixed(1) : '—'}
+          </div>
+          <div className="kv-ov-label">Avg Knowledge</div>
+        </div>
+        <div className="kv-ov-card">
+          <div className="kv-ov-value">{overallStats.totalStudied}<span className="kv-ov-denom">/{overallStats.totalItems}</span></div>
+          <div className="kv-ov-label">Items Studied</div>
+        </div>
+        {overallStats.best && (
+          <div className="kv-ov-card">
+            <div className="kv-ov-value" style={{ color: overallStats.best.subject.color }}>{overallStats.best.subject.glyph} {overallStats.best.subject.name}</div>
+            <div className="kv-ov-label">Strongest Subject</div>
+          </div>
+        )}
+        {overallStats.worst && (
+          <div className="kv-ov-card">
+            <div className="kv-ov-value" style={{ color: overallStats.worst.subject.color }}>{overallStats.worst.subject.glyph} {overallStats.worst.subject.name}</div>
+            <div className="kv-ov-label">Needs Most Work</div>
+          </div>
+        )}
+      </div>
+
+      {/* Subject rankings */}
+      <h2 className="section-title">Subjects</h2>
+      <p className="section-sub">Ranked by average knowledge — click to expand chapters</p>
+
+      <div className="kv-list">
+        {subjectSummaries.map(({ subject, avg, studiedItems, totalItems }, rank) => {
+          const isOpen = expandedSubject === subject.id;
+          const topicRows = isOpen ? getTopicRows(subject) : [];
+
+          return (
+            <div key={subject.id} className={`kv-subject-card ${isOpen ? 'kv-open' : ''}`} style={{ '--kv-delay': `${rank * 50}ms` }}>
+              <div className="kv-subject-row" onClick={() => toggleSubject(subject.id)} style={{ '--sc': subject.color }}>
+                <div className="kv-rank">#{rank + 1}</div>
+                <span className="kv-glyph" style={{ color: subject.color }}>{subject.glyph}</span>
+                <div className="kv-bar-group">
+                  <div className="kv-name">{subject.name}</div>
+                  <div className="kv-bar">
+                    <div className="kv-bar-fill" style={{ width: `${kPct(avg)}%`, background: kColor(avg) }} />
+                  </div>
+                </div>
+                <div className="kv-meta">
+                  <span className="kv-score" style={{ color: kColor(avg) }}>{avg ? avg.toFixed(1) : '—'}</span>
+                  <span className="kv-label-tag" style={{ color: kColor(avg) }}>{kLabel(avg)}</span>
+                  <span className="kv-progress-text">{studiedItems}/{totalItems}</span>
+                </div>
+                <span className={`kv-chevron ${isOpen ? 'kv-chevron-open' : ''}`}>›</span>
+              </div>
+
+              {isOpen && (
+                <div className="kv-topics">
+                  {topicRows.map(({ topic, effectiveK, studiedCount, totalCount }) => {
+                    const topicKey = `${subject.id}::${topic.id}`;
+                    const isTopicOpen = expandedTopic === topicKey;
+                    const hasSubs = (topic.subtopics || []).length > 0;
+                    const sortedSubs = hasSubs
+                      ? [
+                          ...(topic.subtopics || []).filter(st => st.lastStudied).sort((a, b) => (b.knowledge || 0) - (a.knowledge || 0)),
+                          ...(topic.subtopics || []).filter(st => !st.lastStudied),
+                        ]
+                      : [];
+
+                    return (
+                      <div key={topic.id} className="kv-topic-block">
+                        <div
+                          className={`kv-topic-row ${hasSubs ? 'kv-clickable' : ''}`}
+                          onClick={() => hasSubs && toggleTopic(topicKey)}
+                        >
+                          <div className="kv-topic-name">{topic.name}</div>
+                          <div className="kv-topic-bar-wrap">
+                            <div className="kv-topic-bar">
+                              <div className="kv-topic-bar-fill" style={{ width: `${kPct(effectiveK)}%`, background: kColor(effectiveK) }} />
+                            </div>
+                          </div>
+                          <div className="kv-topic-meta">
+                            <span className="kv-topic-score" style={{ color: kColor(effectiveK) }}>
+                              {effectiveK ? effectiveK.toFixed(1) : '—'}
+                            </span>
+                            {hasSubs && <span className="kv-topic-sub-ct">{studiedCount}/{totalCount}</span>}
+                          </div>
+                          {hasSubs && <span className={`kv-chevron-sm ${isTopicOpen ? 'kv-chevron-open' : ''}`}>›</span>}
+                        </div>
+
+                        {isTopicOpen && (
+                          <div className="kv-subtopics">
+                            {sortedSubs.map(st => (
+                              <div key={st.id} className={`kv-subtopic-row ${!st.lastStudied ? 'kv-unseen' : ''}`}>
+                                <div className="kv-st-name">{st.name}</div>
+                                <div className="kv-st-bar">
+                                  <div className="kv-st-bar-fill" style={{ width: `${kPct(st.lastStudied ? (st.knowledge || 1) : 0)}%`, background: kColor(st.lastStudied ? (st.knowledge || 1) : null) }} />
+                                </div>
+                                <span className="kv-st-score" style={{ color: kColor(st.lastStudied ? (st.knowledge || 1) : null) }}>
+                                  {st.lastStudied ? (st.knowledge || 1) : '—'}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Not Yet Started */}
+      {(unstudiedTopics.length > 0 || unstudiedSubtopics.length > 0) && (
+        <div className="kv-not-started">
+          <h2 className="section-title" style={{ marginTop: '2rem' }}>Not Yet Started</h2>
+          <p className="section-sub">Content you haven't studied yet — use this to spot gaps</p>
+
+          <div className="kv-ns-grid">
+            {unstudiedTopics.length > 0 && (
+              <div className="kv-ns-card">
+                <div className="kv-ns-header">
+                  <span className="kv-ns-title">Chapters</span>
+                  <span className="kv-ns-count">{unstudiedTopics.length}</span>
+                </div>
+                <div className="kv-ns-list">
+                  {unstudiedTopics.map(({ topic, subject }) => (
+                    <div key={topic.id} className="kv-ns-item">
+                      <span className="kv-ns-glyph" style={{ color: subject.color }}>{subject.glyph}</span>
+                      <div>
+                        <div className="kv-ns-name">{topic.name}</div>
+                        <div className="kv-ns-sub">{subject.name}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {unstudiedSubtopics.length > 0 && (
+              <div className="kv-ns-card">
+                <div className="kv-ns-header">
+                  <span className="kv-ns-title">Subtopics</span>
+                  <span className="kv-ns-count">{unstudiedSubtopics.length}</span>
+                </div>
+                <div className="kv-ns-list">
+                  {unstudiedSubtopics.map(({ subtopic, topic, subject }) => (
+                    <div key={subtopic.id} className="kv-ns-item">
+                      <span className="kv-ns-glyph" style={{ color: subject.color }}>{subject.glyph}</span>
+                      <div>
+                        <div className="kv-ns-name">{subtopic.name}</div>
+                        <div className="kv-ns-sub">{subject.name} › {topic.name}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -4307,6 +4915,1039 @@ const styles = `
     opacity: 1;
     transform: translateY(0);
     filter: blur(0);
+  }
+
+  /* ── Calendar View ── */
+  .cal-view {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+  }
+
+  .cal-exam-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: linear-gradient(135deg, rgba(184,92,56,0.18), rgba(201,169,97,0.12));
+    border: 1px solid rgba(184,92,56,0.35);
+    border-radius: 12px;
+    padding: 0.75rem 1.25rem;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  .cal-exam-banner-icon { font-size: 1.25rem; }
+
+  .cal-exam-banner-text {
+    flex: 1;
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    color: var(--ink);
+  }
+
+  .cal-exam-banner-text strong { color: var(--terracotta); font-weight: 600; }
+
+  .cal-exam-banner-date {
+    font-family: var(--sans);
+    font-size: 0.75rem;
+    color: var(--ink-soft);
+    letter-spacing: 0.05em;
+  }
+
+  .cal-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .cal-mode-btns {
+    display: flex;
+    background: rgba(255,248,235,0.5);
+    border: 1px solid rgba(201,169,97,0.3);
+    border-radius: 10px;
+    padding: 3px;
+    gap: 2px;
+  }
+
+  .cal-mode-btn {
+    background: none;
+    border: none;
+    padding: 0.35rem 0.9rem;
+    font-family: var(--sans);
+    font-size: 0.75rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    cursor: pointer;
+    border-radius: 7px;
+    transition: all 0.18s;
+  }
+
+  .cal-mode-btn:hover { color: var(--ink); background: rgba(201,169,97,0.15); }
+
+  .cal-mode-btn.active {
+    background: var(--ink);
+    color: var(--papyrus);
+    box-shadow: 0 2px 8px rgba(43,29,14,0.2);
+  }
+
+  .cal-nav {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .cal-nav-btn {
+    background: rgba(255,248,235,0.6);
+    border: 1px solid rgba(201,169,97,0.35);
+    border-radius: 8px;
+    width: 34px;
+    height: 34px;
+    font-size: 1.1rem;
+    color: var(--ink-soft);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.18s;
+    line-height: 1;
+  }
+
+  .cal-nav-btn:hover { background: rgba(201,169,97,0.2); color: var(--ink); }
+
+  .cal-today-btn {
+    background: none;
+    border: 1px solid rgba(201,169,97,0.4);
+    border-radius: 8px;
+    padding: 0.35rem 0.8rem;
+    font-family: var(--sans);
+    font-size: 0.73rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    cursor: pointer;
+    transition: all 0.18s;
+  }
+
+  .cal-today-btn:hover { background: rgba(201,169,97,0.2); color: var(--ink); }
+
+  .cal-nav-label {
+    font-family: var(--display);
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--ink);
+    min-width: 180px;
+    text-align: center;
+  }
+
+  .cal-add-exam-btn {
+    background: rgba(184,92,56,0.1);
+    border: 1px solid rgba(184,92,56,0.35);
+    border-radius: 8px;
+    padding: 0.38rem 0.85rem;
+    font-family: var(--sans);
+    font-size: 0.73rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    color: var(--terracotta);
+    cursor: pointer;
+    transition: all 0.18s;
+    white-space: nowrap;
+  }
+
+  .cal-add-exam-btn:hover { background: rgba(184,92,56,0.18); border-color: rgba(184,92,56,0.55); }
+
+  .cal-add-exam-form {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    background: rgba(255,248,235,0.55);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(184,92,56,0.25);
+    border-radius: 12px;
+    padding: 0.75rem 1rem;
+    animation: detailReveal 0.2s ease;
+  }
+
+  .cal-add-exam-input {
+    background: rgba(255,248,235,0.7);
+    border: 1px solid rgba(201,169,97,0.4);
+    border-radius: 8px;
+    padding: 0.4rem 0.75rem;
+    font-family: var(--sans);
+    font-size: 0.82rem;
+    color: var(--ink);
+    outline: none;
+    flex: 1;
+    min-width: 160px;
+    transition: border-color 0.15s;
+  }
+
+  .cal-add-exam-input:focus { border-color: var(--gold); }
+
+  .cal-add-exam-submit {
+    background: var(--terracotta);
+    border: none;
+    border-radius: 8px;
+    padding: 0.4rem 0.9rem;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: white;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+
+  .cal-add-exam-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+  .cal-add-exam-submit:not(:disabled):hover { opacity: 0.88; }
+
+  .cal-add-exam-cancel {
+    background: none;
+    border: 1px solid rgba(201,169,97,0.3);
+    border-radius: 8px;
+    padding: 0.4rem 0.75rem;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .cal-add-exam-cancel:hover { background: rgba(201,169,97,0.12); color: var(--ink); }
+
+  .cal-body {
+    background: rgba(255,248,235,0.35);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid rgba(201,169,97,0.25);
+    border-radius: 16px;
+    padding: 1.25rem;
+    box-shadow: var(--shadow-card);
+  }
+
+  .cal-day-labels {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+    margin-bottom: 4px;
+  }
+
+  .cal-day-label {
+    font-family: var(--sans);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    text-align: center;
+    padding: 0.3rem 0;
+  }
+
+  /* ── Month grid ── */
+  .cal-month-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+  }
+
+  /* ── Week grid ── */
+  .cal-week-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 6px;
+  }
+
+  .cal-week-col {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .cal-week-col-label {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0.4rem 0.2rem;
+    border-radius: 8px;
+  }
+
+  .cal-week-day-name {
+    font-family: var(--sans);
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  .cal-week-day-num {
+    font-family: var(--display);
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--ink);
+    line-height: 1.1;
+  }
+
+  .cal-today-label {
+    background: rgba(201,169,97,0.18);
+    border-radius: 8px;
+  }
+
+  .cal-today-label .cal-week-day-num { color: var(--gold-dark); }
+
+  /* ── Day cell (shared month/week) ── */
+  .cal-cell {
+    min-height: 70px;
+    border-radius: 10px;
+    padding: 0.45rem 0.5rem 0.5rem;
+    cursor: pointer;
+    transition: all 0.18s;
+    position: relative;
+    overflow: hidden;
+    border: 1px solid transparent;
+    background: rgba(255,248,235,0.4);
+  }
+
+  .cal-cell:hover {
+    background: rgba(201,169,97,0.12);
+    border-color: rgba(201,169,97,0.3);
+    transform: translateY(-1px);
+    box-shadow: 0 3px 10px rgba(43,29,14,0.08);
+  }
+
+  .cal-cell.cal-today {
+    background: rgba(201,169,97,0.2);
+    border-color: rgba(201,169,97,0.5);
+    box-shadow: 0 0 0 2px rgba(201,169,97,0.25);
+  }
+
+  .cal-cell.cal-exam-day {
+    border-color: rgba(184,92,56,0.45);
+    background: rgba(184,92,56,0.07);
+  }
+
+  .cal-cell.cal-exam-day.cal-today {
+    border-color: rgba(184,92,56,0.7);
+    box-shadow: 0 0 0 2px rgba(184,92,56,0.25);
+  }
+
+  .cal-cell.cal-selected {
+    background: rgba(43,29,14,0.08);
+    border-color: rgba(43,29,14,0.3);
+    box-shadow: 0 0 0 2px rgba(43,29,14,0.12);
+  }
+
+  .cal-cell.cal-past { opacity: 0.6; }
+
+  .cal-cell.cal-out {
+    opacity: 0.3;
+    background: transparent;
+  }
+
+  .cal-cell-num {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 0.25rem;
+    line-height: 1;
+  }
+
+  .cal-cell.cal-today .cal-cell-num {
+    color: var(--gold-dark);
+    font-size: 0.82rem;
+  }
+
+  .cal-activity-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, #4a7c59, #6ab585);
+    border-radius: 0 2px 0 0;
+    opacity: 0.7;
+    transition: width 0.3s ease;
+  }
+
+  .cal-cell-events {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .cal-pill {
+    border-radius: 4px;
+    padding: 2px 5px;
+    font-family: var(--sans);
+    font-size: 0.65rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 500;
+  }
+
+  .cal-pill-exam {
+    background: rgba(184,92,56,0.18);
+    color: var(--terracotta);
+    border: 1px solid rgba(184,92,56,0.25);
+  }
+
+  .cal-pill-review {
+    background: color-mix(in srgb, var(--sc) 18%, transparent);
+    color: color-mix(in srgb, var(--sc) 80%, var(--ink));
+    border: 1px solid color-mix(in srgb, var(--sc) 30%, transparent);
+  }
+
+  .cal-pill-more {
+    font-family: var(--sans);
+    font-size: 0.63rem;
+    color: var(--ink-soft);
+    padding-left: 2px;
+  }
+
+  /* ── Mini cells (year view) ── */
+  .cal-year-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1.5rem;
+  }
+
+  .cal-year-month { display: flex; flex-direction: column; gap: 0.4rem; }
+
+  .cal-year-month-name {
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink);
+    text-align: center;
+  }
+
+  .cal-year-day-labels {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 1px;
+  }
+
+  .cal-year-day-label {
+    font-family: var(--sans);
+    font-size: 0.55rem;
+    color: var(--ink-soft);
+    text-align: center;
+    opacity: 0.7;
+  }
+
+  .cal-year-month-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 1px;
+  }
+
+  .cal-mini-cell {
+    aspect-ratio: 1;
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--sans);
+    font-size: 0.6rem;
+    color: var(--ink-soft);
+    cursor: pointer;
+    transition: all 0.15s;
+    position: relative;
+    line-height: 1;
+  }
+
+  .cal-mini-cell:hover { background: rgba(201,169,97,0.2); color: var(--ink); border-radius: 4px; }
+
+  .cal-mini-cell.cal-today {
+    background: rgba(201,169,97,0.3);
+    color: var(--gold-dark);
+    font-weight: 700;
+    border-radius: 50%;
+  }
+
+  .cal-mini-cell.cal-exam-day {
+    background: rgba(184,92,56,0.18);
+    color: var(--terracotta);
+    font-weight: 600;
+    border-radius: 50%;
+  }
+
+  .cal-mini-cell.cal-selected {
+    background: rgba(43,29,14,0.15);
+    color: var(--ink);
+    border-radius: 50%;
+  }
+
+  .cal-mini-cell.cal-out { opacity: 0.2; }
+
+  .cal-mini-cell.cal-past { opacity: 0.5; }
+
+  .cal-mini-dots {
+    display: flex;
+    gap: 2px;
+    margin-top: 1px;
+  }
+
+  .cal-dot {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    display: block;
+  }
+
+  .cal-dot-exam { background: var(--terracotta); }
+  .cal-dot-review { background: var(--gold-dark); }
+  .cal-dot-activity { background: #4a7c59; }
+
+  /* ── Day detail panel ── */
+  .cal-day-detail {
+    background: rgba(255,248,235,0.55);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid rgba(201,169,97,0.3);
+    border-radius: 16px;
+    padding: 1.25rem 1.5rem;
+    box-shadow: var(--shadow-card);
+    animation: detailReveal 0.25s cubic-bezier(0.2,0,0,1);
+  }
+
+  @keyframes detailReveal {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .cal-detail-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+  }
+
+  .cal-detail-date {
+    font-family: var(--display);
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .cal-detail-close {
+    background: none;
+    border: 1px solid rgba(201,169,97,0.3);
+    border-radius: 6px;
+    width: 28px;
+    height: 28px;
+    font-size: 0.75rem;
+    color: var(--ink-soft);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+  }
+
+  .cal-detail-close:hover { background: rgba(201,169,97,0.2); color: var(--ink); }
+
+  .cal-detail-empty {
+    font-family: var(--body);
+    font-size: 0.9rem;
+    color: var(--ink-soft);
+    text-align: center;
+    padding: 0.5rem 0;
+  }
+
+  .cal-detail-section {
+    margin-bottom: 1rem;
+  }
+
+  .cal-detail-section:last-child { margin-bottom: 0; }
+
+  .cal-detail-section-title {
+    font-family: var(--sans);
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin-bottom: 0.6rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid rgba(201,169,97,0.2);
+  }
+
+  .cal-detail-exam {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.6rem 0.75rem;
+    background: rgba(184,92,56,0.08);
+    border: 1px solid rgba(184,92,56,0.2);
+    border-radius: 10px;
+    margin-bottom: 0.4rem;
+  }
+
+  .cal-detail-exam-glyph { font-size: 1.1rem; margin-top: 1px; }
+
+  .cal-detail-exam-name {
+    font-family: var(--body);
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .cal-detail-exam-countdown {
+    font-family: var(--sans);
+    font-size: 0.75rem;
+    color: var(--terracotta);
+    margin-top: 0.15rem;
+  }
+
+  .cal-detail-review-list { display: flex; flex-direction: column; gap: 0.4rem; }
+
+  .cal-detail-review {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    background: rgba(255,248,235,0.6);
+    border: 1px solid color-mix(in srgb, var(--sc) 25%, rgba(201,169,97,0.2));
+    border-radius: 10px;
+    transition: background 0.15s;
+  }
+
+  .cal-detail-review:hover { background: rgba(201,169,97,0.12); }
+
+  .cal-detail-review-glyph { font-size: 1.1rem; flex-shrink: 0; }
+
+  .cal-detail-review-info { flex: 1; min-width: 0; }
+
+  .cal-detail-review-subject {
+    font-family: var(--sans);
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin-bottom: 0.1rem;
+  }
+
+  .cal-detail-review-topic {
+    font-family: var(--body);
+    font-size: 0.9rem;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .cal-study-btn {
+    flex-shrink: 0;
+    font-size: 0.72rem;
+    padding: 0.25rem 0.65rem;
+  }
+
+  .cal-detail-mins {
+    font-family: var(--body);
+    font-size: 0.95rem;
+    color: #4a7c59;
+    font-weight: 500;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .cal-year-grid { grid-template-columns: repeat(2, 1fr); gap: 1rem; }
+    .cal-toolbar { flex-direction: column; align-items: flex-start; }
+    .cal-nav-label { min-width: unset; font-size: 0.9rem; }
+    .cal-week-grid { gap: 3px; }
+    .cal-cell { min-height: 55px; padding: 0.3rem 0.3rem 0.4rem; }
+    .cal-pill { font-size: 0.58rem; }
+  }
+
+  @media (max-width: 480px) {
+    .cal-year-grid { grid-template-columns: repeat(2, 1fr); }
+    .cal-week-grid { grid-template-columns: repeat(7, 1fr); gap: 2px; }
+    .cal-cell-num { font-size: 0.68rem; }
+    .cal-cell-events { display: none; }
+    .cal-cell { min-height: 42px; }
+  }
+
+  /* ── Knowledge View ── */
+  .kv-view { display: flex; flex-direction: column; gap: 1rem; }
+
+  .kv-overview {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .kv-ov-card {
+    background: rgba(255,248,235,0.45);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(201,169,97,0.25);
+    border-radius: 12px;
+    padding: 0.9rem 1.1rem;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .kv-ov-value {
+    font-family: var(--display);
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--ink);
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .kv-ov-denom { font-size: 0.9rem; color: var(--ink-soft); font-weight: 400; }
+
+  .kv-ov-label {
+    font-family: var(--sans);
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin-top: 0.25rem;
+  }
+
+  .kv-list { display: flex; flex-direction: column; gap: 0.5rem; }
+
+  @keyframes kvSlideIn {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .kv-subject-card {
+    background: rgba(255,248,235,0.38);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid rgba(201,169,97,0.22);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+    transition: box-shadow 0.2s;
+    animation: kvSlideIn 0.4s cubic-bezier(0.2,0,0,1) both;
+    animation-delay: var(--kv-delay, 0ms);
+  }
+
+  .kv-subject-card.kv-open {
+    border-color: rgba(201,169,97,0.4);
+    box-shadow: var(--shadow-card);
+  }
+
+  .kv-subject-row {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    padding: 0.85rem 1.1rem;
+    cursor: pointer;
+    transition: background 0.18s;
+    border-left: 3px solid var(--sc, var(--gold));
+  }
+
+  .kv-subject-row:hover { background: rgba(201,169,97,0.08); }
+
+  .kv-rank {
+    font-family: var(--sans);
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: var(--ink-soft);
+    min-width: 22px;
+    letter-spacing: 0.03em;
+  }
+
+  .kv-glyph { font-size: 1.3rem; flex-shrink: 0; }
+
+  .kv-bar-group { flex: 1; min-width: 0; }
+
+  .kv-name {
+    font-family: var(--sans);
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 0.3rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .kv-bar {
+    height: 7px;
+    background: rgba(92,74,53,0.1);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .kv-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.7s cubic-bezier(0.2,0,0,1);
+  }
+
+  .kv-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.15rem;
+    min-width: 80px;
+  }
+
+  .kv-score {
+    font-family: var(--display);
+    font-size: 1.15rem;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .kv-label-tag {
+    font-family: var(--sans);
+    font-size: 0.63rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .kv-progress-text {
+    font-family: var(--sans);
+    font-size: 0.63rem;
+    color: var(--ink-soft);
+  }
+
+  .kv-chevron {
+    font-size: 1.1rem;
+    color: var(--ink-soft);
+    transition: transform 0.2s;
+    flex-shrink: 0;
+    line-height: 1;
+  }
+
+  .kv-chevron.kv-chevron-open { transform: rotate(90deg); }
+
+  /* Topics inside expanded subject */
+  .kv-topics {
+    border-top: 1px solid rgba(201,169,97,0.15);
+    padding: 0.5rem 0.75rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .kv-topic-block { }
+
+  .kv-topic-row {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.5rem 0.6rem;
+    border-radius: 8px;
+    transition: background 0.15s;
+  }
+
+  .kv-topic-row.kv-clickable { cursor: pointer; }
+  .kv-topic-row.kv-clickable:hover { background: rgba(201,169,97,0.1); }
+
+  .kv-topic-name {
+    font-family: var(--body);
+    font-size: 0.9rem;
+    color: var(--ink);
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .kv-topic-bar-wrap { width: 100px; flex-shrink: 0; }
+
+  .kv-topic-bar {
+    height: 5px;
+    background: rgba(92,74,53,0.1);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .kv-topic-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.6s cubic-bezier(0.2,0,0,1);
+  }
+
+  .kv-topic-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 60px;
+    justify-content: flex-end;
+  }
+
+  .kv-topic-score {
+    font-family: var(--sans);
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+
+  .kv-topic-sub-ct {
+    font-family: var(--sans);
+    font-size: 0.63rem;
+    color: var(--ink-soft);
+  }
+
+  .kv-chevron-sm {
+    font-size: 0.9rem;
+    color: var(--ink-soft);
+    transition: transform 0.18s;
+    flex-shrink: 0;
+    line-height: 1;
+  }
+
+  .kv-chevron-sm.kv-chevron-open { transform: rotate(90deg); }
+
+  /* Subtopics inside expanded topic */
+  .kv-subtopics {
+    padding: 0.25rem 0 0.35rem 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .kv-subtopic-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.35rem 0.5rem;
+    border-radius: 6px;
+    transition: background 0.12s;
+  }
+
+  .kv-subtopic-row:hover { background: rgba(201,169,97,0.07); }
+
+  .kv-subtopic-row.kv-unseen { opacity: 0.45; }
+
+  .kv-st-name {
+    font-family: var(--body);
+    font-size: 0.83rem;
+    color: var(--ink);
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .kv-st-bar {
+    width: 80px;
+    height: 4px;
+    background: rgba(92,74,53,0.1);
+    border-radius: 2px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .kv-st-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.5s cubic-bezier(0.2,0,0,1);
+  }
+
+  .kv-st-score {
+    font-family: var(--sans);
+    font-size: 0.75rem;
+    font-weight: 700;
+    min-width: 18px;
+    text-align: right;
+  }
+
+  /* Not started section */
+  .kv-not-started { }
+
+  .kv-ns-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+    margin-top: 0.75rem;
+  }
+
+  .kv-ns-card {
+    background: rgba(255,248,235,0.38);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(201,169,97,0.2);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+    animation: kvSlideIn 0.4s cubic-bezier(0.2,0,0,1) both;
+  }
+
+  .kv-ns-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid rgba(201,169,97,0.15);
+  }
+
+  .kv-ns-title {
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  .kv-ns-count {
+    background: rgba(92,74,53,0.1);
+    color: var(--ink-soft);
+    font-family: var(--sans);
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 0.1rem 0.5rem;
+    border-radius: 20px;
+  }
+
+  .kv-ns-list {
+    padding: 0.5rem 0;
+    max-height: 340px;
+    overflow-y: auto;
+  }
+
+  .kv-ns-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+    padding: 0.45rem 1rem;
+    transition: background 0.12s;
+    cursor: default;
+  }
+
+  .kv-ns-item:hover { background: rgba(201,169,97,0.07); }
+
+  .kv-ns-glyph { font-size: 1rem; flex-shrink: 0; margin-top: 1px; }
+
+  .kv-ns-name {
+    font-family: var(--body);
+    font-size: 0.88rem;
+    color: var(--ink);
+    line-height: 1.3;
+  }
+
+  .kv-ns-sub {
+    font-family: var(--sans);
+    font-size: 0.65rem;
+    color: var(--ink-soft);
+    margin-top: 0.1rem;
+  }
+
+  @media (max-width: 640px) {
+    .kv-overview { grid-template-columns: repeat(2, 1fr); }
+    .kv-topic-bar-wrap { width: 60px; }
+    .kv-st-bar { width: 50px; }
+    .kv-meta { min-width: 60px; }
   }
 
   /* ── prefers-reduced-motion: kill all decorative animations ── */
