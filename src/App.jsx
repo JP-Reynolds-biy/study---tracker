@@ -41,6 +41,78 @@ function makeCh(id, name, subtopics) {
   return { id, name, knowledge: 1, notes: '', quizletUrl: '', examLinks: '', examPdfs: [], lastStudied: null, reviewCount: 0, totalMinutes: 0, subtopics };
 }
 
+const DEFAULT_MATHS_TOPICS = [
+  makeCh('maths_ch1', 'Chapter 1 - Algebra 1', [
+    makeSt('maths_ch1_st1', 'Simplifying expressions'),
+    makeSt('maths_ch1_st2', 'Removing brackets'),
+    makeSt('maths_ch1_st3', 'Evaluating expressions'),
+    makeSt('maths_ch1_st4', 'Solving linear equations'),
+    makeSt('maths_ch1_st5', 'Solving problems using linear equations'),
+    makeSt('maths_ch1_st6', 'Algebraic division'),
+    makeSt('maths_ch1_st7', 'Plotting numbers on the number line'),
+    makeSt('maths_ch1_st8', 'Solving inequalities'),
+  ]),
+  makeCh('maths_ch2', 'Chapter 2 - Factors', [
+    makeSt('maths_ch2_st1', 'Factorising with common factors'),
+    makeSt('maths_ch2_st2', 'Factorising by grouping terms'),
+    makeSt('maths_ch2_st3', 'Difference of two squares'),
+    makeSt('maths_ch2_st4', 'Factorising quadratic expressions'),
+    makeSt('maths_ch2_st5', 'Using factors to simplify algebraic fractions'),
+  ]),
+  makeCh('maths_ch5', 'Chapter 5 - Statistics 1 - Collecting Data', [
+    makeSt('maths_ch5_st1', 'Statistical questions'),
+    makeSt('maths_ch5_st2', 'Sampling'),
+  ]),
+  makeCh('maths_ch7', 'Chapter 7 - Statistics 2 - Averages and Variability', [
+    makeSt('maths_ch7_st1', 'Summary statistics'),
+    makeSt('maths_ch7_st2', 'The mean'),
+    makeSt('maths_ch7_st3', 'Which average to use?'),
+    makeSt('maths_ch7_st4', 'Frequency tables'),
+    makeSt('maths_ch7_st5', 'Range and variability'),
+  ]),
+  makeCh('maths_ch10', 'Chapter 10 - Simultaneous Equations', [
+    makeSt('maths_ch10_st1', 'Solving simultaneous equations'),
+    makeSt('maths_ch10_st2', 'Solving simultaneous equations graphically'),
+  ]),
+  makeCh('maths_ch11', 'Chapter 11 - Coordinate Geometry - The Line', [
+    makeSt('maths_ch11_st1', 'Distance and mid-point formulae'),
+    makeSt('maths_ch11_st2', 'The slope of a line'),
+    makeSt('maths_ch11_st3', 'The equation of a line'),
+    makeSt('maths_ch11_st4', 'The equation y = mx + c'),
+    makeSt('maths_ch11_st5', 'Parallel and perpendicular lines'),
+    makeSt('maths_ch11_st6', 'Graphing lines'),
+    makeSt('maths_ch11_st7', 'Intersection of two lines'),
+    makeSt('maths_ch11_st8', 'Rates of change'),
+  ]),
+  makeCh('maths_ch13', 'Chapter 13 - Statistics 3 - Presenting Data', [
+    makeSt('maths_ch13_st1', 'Revision of line plots and bar charts'),
+    makeSt('maths_ch13_st2', 'Pie charts'),
+    makeSt('maths_ch13_st3', 'Histograms'),
+    makeSt('maths_ch13_st4', 'Stem and leaf plots'),
+    makeSt('maths_ch13_st5', 'Misleading graphs'),
+  ]),
+  makeCh('maths_ch15', 'Chapter 15 - Quadratic Equations', [
+    makeSt('maths_ch15_st1', 'Solving quadratic equations using factors'),
+    makeSt('maths_ch15_st2', 'Using the quadratic formula'),
+    makeSt('maths_ch15_st3', 'Problems leading to quadratic equations'),
+    makeSt('maths_ch15_st4', 'Forming a quadratic equation given its roots'),
+  ]),
+  makeCh('maths_ch21', 'Chapter 21 - Algebra 2', [
+    makeSt('maths_ch21_st1', 'Adding algebraic fractions'),
+    makeSt('maths_ch21_st2', 'Solving equations involving fractions'),
+    makeSt('maths_ch21_st3', 'Solving problems involving fractions'),
+    makeSt('maths_ch21_st4', 'Rearranging formulae'),
+    makeSt('maths_ch21_st5', 'Evaluating and writing formulae'),
+  ]),
+  makeCh('maths_ch22', 'Chapter 22 - Trigonometry', [
+    makeSt('maths_ch22_st1', 'The theorem of Pythagoras'),
+    makeSt('maths_ch22_st2', 'Sine, cosine and tangent ratios'),
+    makeSt('maths_ch22_st3', 'Using a calculator to find ratios and angles'),
+    makeSt('maths_ch22_st4', 'Solving right-angled triangles'),
+    makeSt('maths_ch22_st5', 'Using trigonometry to solve problems'),
+  ]),
+];
+
 const DEFAULT_BUSINESS_TOPICS = [
   makeCh('biz_ch1', 'Chapter 1 - My Personal Resources', [
     makeSt('biz_ch1_st1', 'Individual and Household Resources'),
@@ -379,7 +451,7 @@ function ExamPdfs({ pdfs = [], onChange, userId }) {
 // ============ MAIN APP ============
 export default function StudyTracker() {
   const [state, setState] = useState({
-    subjects: DEFAULT_SUBJECTS.map(s => ({ ...s, topics: s.id === 'business' ? DEFAULT_BUSINESS_TOPICS : [] })),
+    subjects: DEFAULT_SUBJECTS.map(s => ({ ...s, topics: s.id === 'business' ? DEFAULT_BUSINESS_TOPICS : s.id === 'maths' ? DEFAULT_MATHS_TOPICS : [] })),
     sessions: [],
     xp: 0,
     streak: { count: 0, lastDay: null },
@@ -444,14 +516,17 @@ export default function StudyTracker() {
       }
 
       if (data) {
-        // Migrate existing accounts: inject default Business topics if none exist yet
+        // Migrate existing accounts: inject default topics if none exist yet
         const hasBizTopics = data.subjects?.find(s => s.id === 'business')?.topics?.length > 0;
-        if (!hasBizTopics) {
+        const hasMathsTopics = data.subjects?.find(s => s.id === 'maths')?.topics?.length > 0;
+        if (!hasBizTopics || !hasMathsTopics) {
           data = {
             ...data,
-            subjects: data.subjects.map(s =>
-              s.id === 'business' ? { ...s, topics: DEFAULT_BUSINESS_TOPICS } : s
-            ),
+            subjects: data.subjects.map(s => {
+              if (s.id === 'business' && !hasBizTopics) return { ...s, topics: DEFAULT_BUSINESS_TOPICS };
+              if (s.id === 'maths' && !hasMathsTopics) return { ...s, topics: DEFAULT_MATHS_TOPICS };
+              return s;
+            }),
           };
         }
         setState(data);
