@@ -665,6 +665,25 @@ export default function StudyTracker() {
     }));
   };
 
+  const reorderTopics = (subjectId, newTopics) => {
+    setState(prev => ({
+      ...prev,
+      subjects: prev.subjects.map(s => s.id === subjectId ? { ...s, topics: newTopics } : s)
+    }));
+  };
+
+  const reorderSubtopics = (subjectId, topicId, newSubtopics) => {
+    setState(prev => ({
+      ...prev,
+      subjects: prev.subjects.map(s =>
+        s.id === subjectId ? {
+          ...s,
+          topics: s.topics.map(t => t.id === topicId ? { ...t, subtopics: newSubtopics } : t)
+        } : s
+      )
+    }));
+  };
+
   const addExam = (name, date) => {
     setState(prev => ({
       ...prev,
@@ -1022,6 +1041,8 @@ export default function StudyTracker() {
               }}
               onUnlogSession={(id) => setConfirmUnlog(id)}
               onUpdateSubject={(updates) => updateSubject(activeSubject, updates)}
+              onReorderTopics={(newTopics) => reorderTopics(activeSubject, newTopics)}
+              onReorderSubtopics={(tid, newSubs) => reorderSubtopics(activeSubject, tid, newSubs)}
               userId={user?.id}
             />
           )}
@@ -1298,7 +1319,90 @@ function SubjectGrid({ subjects, sessions, onSelect }) {
   );
 }
 
-function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onLogStudy, onDeleteTopic, onUpdateTopic, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic, onUnlogSession, onUpdateSubject, userId }) {
+function DragReorderList({ items, renderItem, onReorder, className }) {
+  const [draggingId, setDraggingId] = useState(null);
+  const [insertAt, setInsertAt] = useState(null);
+  const containerRef = useRef(null);
+
+  const displayItems = useMemo(() => {
+    if (draggingId === null || insertAt === null) return items;
+    const fromIdx = items.findIndex(i => i.id === draggingId);
+    if (fromIdx === -1) return items;
+    const arr = [...items];
+    const [item] = arr.splice(fromIdx, 1);
+    arr.splice(insertAt, 0, item);
+    return arr;
+  }, [items, draggingId, insertAt]);
+
+  const startDrag = (itemId, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const fromIdx = items.findIndex(i => i.id === itemId);
+    setDraggingId(itemId);
+    setInsertAt(fromIdx);
+
+    const getY = (ev) => ev.touches ? ev.touches[0].clientY : ev.clientY;
+
+    const move = (ev) => {
+      if (ev.cancelable) ev.preventDefault();
+      const y = getY(ev);
+      const container = containerRef.current;
+      if (!container) return;
+      const children = Array.from(container.children);
+      let nearest = 0;
+      let minDist = Infinity;
+      children.forEach((child, i) => {
+        const rect = child.getBoundingClientRect();
+        const mid = rect.top + rect.height / 2;
+        const dist = Math.abs(y - mid);
+        if (dist < minDist) { minDist = dist; nearest = i; }
+      });
+      setInsertAt(nearest);
+    };
+
+    const end = () => {
+      setDraggingId(curId => {
+        setInsertAt(curIns => {
+          if (curId !== null && curIns !== null) {
+            const from = items.findIndex(i => i.id === curId);
+            if (from !== curIns) {
+              const arr = [...items];
+              const [moved] = arr.splice(from, 1);
+              arr.splice(curIns, 0, moved);
+              onReorder(arr);
+            }
+          }
+          return null;
+        });
+        return null;
+      });
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('touchmove', move);
+      window.removeEventListener('touchend', end);
+    };
+
+    window.addEventListener('pointermove', move, { passive: false });
+    window.addEventListener('pointerup', end);
+    window.addEventListener('touchmove', move, { passive: false });
+    window.addEventListener('touchend', end);
+  };
+
+  return (
+    <div className={className} ref={containerRef}>
+      {displayItems.map((item) => {
+        const isDragging = item.id === draggingId;
+        return (
+          <div key={item.id} className={isDragging ? 'drag-item drag-item--lifting' : 'drag-item'}>
+            {renderItem(item, startDrag, isDragging)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onLogStudy, onDeleteTopic, onUpdateTopic, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic, onUnlogSession, onUpdateSubject, onReorderTopics, onReorderSubtopics, userId }) {
   const [expandedTopic, setExpandedTopic] = useState(null);
   const daysToExam = getDaysUntilExam(subject.examDate);
   const weekMins = getWeekMinutes(sessions, subject.id);
@@ -1362,15 +1466,24 @@ function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onL
           <p>No chapters yet. Add your first one to begin.</p>
         </div>
       ) : (
-        <div className="topic-list">
-          {subject.topics.map(topic => {
+        <DragReorderList
+          items={subject.topics}
+          onReorder={onReorderTopics}
+          className="topic-list"
+          renderItem={(topic, startDrag, isDragging) => {
             const review = getEffectiveReviewStatus(topic);
             const isExpanded = expandedTopic === topic.id;
             return (
-              <div key={topic.id} className={`topic-card ${isExpanded ? 'expanded' : ''}`}>
+              <div className={`topic-card ${isExpanded ? 'expanded' : ''} ${isDragging ? 'dragging' : ''}`}>
                 <div className="topic-header" onClick={() => setExpandedTopic(isExpanded ? null : topic.id)}>
                   <div className="topic-main">
                     <div className="topic-name-row">
+                      <span
+                        className="drag-handle"
+                        onPointerDown={e => startDrag(topic.id, e)}
+                        onTouchStart={e => startDrag(topic.id, e)}
+                        title="Drag to reorder"
+                      >⠿</span>
                       <button
                         className={`priority-btn ${topic.priority ? 'active' : ''}`}
                         onClick={e => { e.stopPropagation(); onUpdateTopic(topic.id, { priority: !topic.priority }); }}
@@ -1550,6 +1663,7 @@ function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onL
                       onUpdateSubtopic={(stid, updates) => onUpdateSubtopic(topic.id, stid, updates)}
                       onLogSubtopic={(st) => onLogSubtopic(topic, st)}
                       onUnlogSession={onUnlogSession}
+                      onReorderSubtopics={(newSubs) => onReorderSubtopics(topic.id, newSubs)}
                       userId={userId}
                     />
 
@@ -1585,8 +1699,8 @@ function SubjectView({ subject, sessions, onBack, onAddTopic, onSelectTopic, onL
                 )}
               </div>
             );
-          })}
-        </div>
+          }}
+        />
       )}
     </div>
   );
@@ -1602,7 +1716,7 @@ function KnowledgeBar({ level }) {
   );
 }
 
-function SubtopicSection({ topic, sessions, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic, onUnlogSession, userId }) {
+function SubtopicSection({ topic, sessions, onAddSubtopic, onDeleteSubtopic, onUpdateSubtopic, onLogSubtopic, onUnlogSession, onReorderSubtopics, userId }) {
   const [expandedSt, setExpandedSt] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState('');
@@ -1643,12 +1757,22 @@ function SubtopicSection({ topic, sessions, onAddSubtopic, onDeleteSubtopic, onU
         <p className="subtopic-empty">No subtopics yet.</p>
       )}
 
-      {subtopics.map(st => {
+      <DragReorderList
+        items={subtopics}
+        onReorder={onReorderSubtopics}
+        className="subtopic-drag-list"
+        renderItem={(st, startDrag, isDragging) => {
         const review = getReviewStatus(st);
         const isExp = expandedSt === st.id;
         return (
-          <div key={st.id} className={`subtopic-card ${isExp ? 'expanded' : ''}`}>
+          <div className={`subtopic-card ${isExp ? 'expanded' : ''} ${isDragging ? 'dragging' : ''}`}>
             <div className="subtopic-row" onClick={() => setExpandedSt(isExp ? null : st.id)}>
+              <span
+                className="drag-handle drag-handle--sm"
+                onPointerDown={e => startDrag(st.id, e)}
+                onTouchStart={e => startDrag(st.id, e)}
+                title="Drag to reorder"
+              >⠿</span>
               <div className="subtopic-info">
                 <span className="subtopic-name">↳ {st.name}</span>
                 <div className="topic-meta">
@@ -1745,7 +1869,8 @@ function SubtopicSection({ topic, sessions, onAddSubtopic, onDeleteSubtopic, onU
             )}
           </div>
         );
-      })}
+        }}
+      />
     </div>
   );
 }
@@ -4744,6 +4869,35 @@ const styles = `
   .setting-goal-progress { display: flex; align-items: center; gap: 0.6rem; flex: 1; min-width: 180px; }
 
   /* ── Priority flag ── */
+  /* ── Drag reorder ── */
+  .drag-item { transition: opacity 0.15s; }
+  .drag-item--lifting { opacity: 0.45; transform: scale(0.98); }
+
+  .drag-handle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    font-size: 1.1rem;
+    color: var(--ink-soft);
+    cursor: grab;
+    border-radius: 4px;
+    flex-shrink: 0;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    transition: color 0.15s, background 0.15s;
+  }
+  .drag-handle:hover { color: var(--subject-color, var(--gold-dark)); background: rgba(0,0,0,0.05); }
+  .drag-handle:active { cursor: grabbing; }
+  .drag-handle--sm { font-size: 0.95rem; width: 1.2rem; height: 1.2rem; }
+
+  .topic-card.dragging { box-shadow: 0 12px 40px rgba(43,29,14,0.22); transform: scale(1.02); z-index: 10; }
+  .subtopic-card.dragging { box-shadow: 0 8px 24px rgba(43,29,14,0.18); transform: scale(1.02); }
+
+  .subtopic-drag-list { display: flex; flex-direction: column; }
+
   .topic-name-row { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.2rem; }
   .priority-btn {
     background: none;
